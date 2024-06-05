@@ -1,3 +1,4 @@
 /.vs
 /src/.vs
 /src/TA.DataAccess.SqlServer/obj
+/src/TA.DataAccess.SqlServer/bin
