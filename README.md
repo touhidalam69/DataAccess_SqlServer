@@ -40,8 +40,7 @@ Register the SqlServerHelper in your Startup.cs or Program.cs:
 ```sh
 public void ConfigureServices(IServiceCollection services)
 {
-    services.AddSingleton<ISqlServerHelper, SqlServerHelper>();
-    services.Configure<CacheConfiguration>(Configuration.GetSection("CacheConfiguration"));
+    services.AddSingleton<ISqlServerHelper, SqlServerHelper>();  
 }
 
 ```
