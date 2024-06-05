@@ -1,18 +1,41 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
-		<TargetFramework>net8.0</TargetFramework>
+		<TargetFrameworks>netcoreapp3.1;net5.0;net8.0</TargetFrameworks>
+		<LangVersion>latest</LangVersion>
+
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>TA.DataAccess.SqlServer</PackageId>
-		<Version>1.0.0</Version>
+		<Version>1.0.2</Version>
 		<Authors>Touhid Alam</Authors>
 		<Company>Touhid Alam</Company>
 		<Product>TA.DataAccess.SqlServer</Product>
 		<Description>TA.DataAccess.SqlServer is a comprehensive .NET library designed to simplify database operations with SQL Server. It provides a range of methods to execute queries, retrieve data, and perform CRUD operations using strongly-typed models.</Description>
-		<PackageTags>SQLServer DataAccess CRUD Database</PackageTags>
+		<PackageTags>SQLServer DataAccess CRUD Database </PackageTags>
 		<RepositoryUrl>https://github.com/touhidalam69/DataAccess_SqlServer</RepositoryUrl>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageLicenseFile>LICENSE</PackageLicenseFile>
+		<Title>DataAccess.SqlServer</Title>
+		<Copyright>MIT</Copyright>
+		<PackageProjectUrl>https://github.com/touhidalam69/DataAccess_SqlServer</PackageProjectUrl>
+		<PackageReleaseNotes>Bug Fixed and some basic info added</PackageReleaseNotes>
+		<PackageIcon>TA.DataAccess.SqlServer.png</PackageIcon>
 	</PropertyGroup>
+	<ItemGroup>
+	  <None Include="..\..\LICENSE">
+	    <Pack>True</Pack>
+	    <PackagePath>\</PackagePath>
+	  </None>
+	  <None Include="..\..\README.md">
+	    <Pack>True</Pack>
+	    <PackagePath>\</PackagePath>
+	  </None>
+	  <None Include="..\..\TA.DataAccess.SqlServer.png">
+	    <Pack>True</Pack>
+	    <PackagePath>\</PackagePath>
+	  </None>
+	</ItemGroup>
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
 		<PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.1" />
