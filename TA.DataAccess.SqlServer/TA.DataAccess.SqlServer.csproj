@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<PackageId>TA.DataAccess.SqlServer</PackageId>
+		<Version>1.0.0</Version>
+		<Authors>Touhid Alam</Authors>
+		<Company>Touhid Alam</Company>
+		<Product>TA.DataAccess.SqlServer</Product>
+		<Description>TA.DataAccess.SqlServer is a comprehensive .NET library designed to simplify database operations with SQL Server. It provides a range of methods to execute queries, retrieve data, and perform CRUD operations using strongly-typed models.</Description>
+		<PackageTags>SQLServer DataAccess CRUD Database</PackageTags>
+		<RepositoryUrl>https://github.com/touhidalam69/TA.DataAccess.SqlServer</RepositoryUrl>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.1" />
+		<PackageReference Include="System.Data.SqlClient" Version="4.8.6" />
+	</ItemGroup>
+</Project>
