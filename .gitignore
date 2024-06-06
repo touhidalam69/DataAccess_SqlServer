@@ -2,3 +2,5 @@
 /src/.vs
 /src/TA.DataAccess.SqlServer/obj
 /src/TA.DataAccess.SqlServer/bin
+/src/SqlServerHelperTest/bin
+/src/SqlServerHelperTest/obj
