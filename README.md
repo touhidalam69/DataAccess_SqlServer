@@ -17,6 +17,8 @@ You can install the package via NuGet Package Manager:
 
 ```sh
 dotnet add package TA.DataAccess.SqlServer
+
+PM> NuGet\Install-Package TA.DataAccess.SqlServer
 ```
 
 ## Usage
@@ -63,31 +65,61 @@ public class MyService
 
     public void ExecuteSampleQueries()
     {
-        // Execute a non-query command
-        _sqlServerHelper.ExecuteNonQuery("INSERT INTO MyTable (Column1) VALUES (@Value)", new SqlParameter[] { new SqlParameter("@Value", "SampleValue") });
+            // Test ExecuteNonQuery with a single query
+            string createTableQuery = "CREATE TABLE TestTable (Id INT PRIMARY KEY, Name NVARCHAR(50))";
+            _sqlServerHelper.ExecuteNonQuery(createTableQuery);
 
-        // Execute a query and get results as DataTable
-        DataTable dt = _sqlServerHelper.Select("SELECT * FROM MyTable");
+            // Test ExecuteNonQuery with multiple queries
+            var queries = new List<string>
+            {
+                "INSERT INTO TestTable (Id, Name) VALUES (1, 'Test Name 1')",
+                "INSERT INTO TestTable (Id, Name) VALUES (2, 'Test Name 2')"
+            };
+            _sqlServerHelper.ExecuteNonQuery(queries);
 
-        // Execute a query and get results as a list of strongly-typed models
-        List<MyModel> models = _sqlServerHelper.Select<MyModel>("SELECT * FROM MyTable");
+            // Test Select with a single query
+            string selectQuery = "SELECT * FROM TestTable";
+            var dataTable = _sqlServerHelper.Select(selectQuery);
 
-        // Insert a model
-        MyModel model = new MyModel { Column1 = "Value1", Column2 = "Value2" };
-        _sqlServerHelper.InsertModel(model, "MyTable");
+            // Test Select<T> with a single query
+            var results = _sqlServerHelper.Select<TestModel>("SELECT * FROM TestTable");
+            
 
-        // Insert multiple models
-        List<MyModel> modelList = new List<MyModel> { model, model };
-        _sqlServerHelper.InsertModels(modelList, "MyTable");
+            // Test InsertModel
+            var newModel = new TestModel { Id = 3, Name = "Test Name 3" };
+            _sqlServerHelper.InsertModel(newModel, "TestTable");
+
+            // Test InsertModels
+            var newModels = new List<TestModel>
+            {
+                new TestModel { Id = 4, Name = "Test Name 4" },
+                new TestModel { Id = 5, Name = "Test Name 5" }
+            };
+            _sqlServerHelper.InsertModels(newModels, "TestTable");
+
+            // Test GetAllModels
+            var allModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
+
+            // Test GetModelById
+            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "Id", 1);
+
+            // Test UpdateModel
+            modelById.Name = "Updated Test Name 1";
+            _sqlServerHelper.UpdateModel(modelById, "TestTable", "Id");
+
+            // Test DeleteModel
+            _sqlServerHelper.DeleteModel("TestTable", "Id", 1);
+
+            // Clean up
+            _sqlServerHelper.ExecuteNonQuery("DROP TABLE TestTable");
     }
 }
 
 
-public class MyModel
+public class TestModel
 {
     public int Id { get; set; }
-    public string Column1 { get; set; }
-    public string Column2 { get; set; }
+    public string Name { get; set; }
 }
 
 ```
@@ -95,15 +127,14 @@ public class MyModel
 You can use the NoCrudAttribute to exclude properties from CRUD operations:
 
 ```sh
-public class MyModel
+public class TestModel
 {
     public int Id { get; set; }
     
     [NoCrud]
     public string ExcludedColumn { get; set; }
     
-    public string Column1 { get; set; }
-    public string Column2 { get; set; }
+    public string Name { get; set; }
 }
 ```
 
