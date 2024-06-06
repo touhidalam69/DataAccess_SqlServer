@@ -7,20 +7,21 @@
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>TA.DataAccess.SqlServer</PackageId>
-		<Version>1.0.2</Version>
+		<Version>1.0.3</Version>
 		<Authors>Touhid Alam</Authors>
 		<Company>Touhid Alam</Company>
 		<Product>TA.DataAccess.SqlServer</Product>
 		<Description>TA.DataAccess.SqlServer is a comprehensive .NET library designed to simplify database operations with SQL Server. It provides a range of methods to execute queries, retrieve data, and perform CRUD operations using strongly-typed models.</Description>
-		<PackageTags>SQLServer DataAccess CRUD Database </PackageTags>
+		<PackageTags>SQLServer DataAccess CRUD Database ORM execute queries retrieve data insert update delete models</PackageTags>
 		<RepositoryUrl>https://github.com/touhidalam69/DataAccess_SqlServer</RepositoryUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseFile>LICENSE</PackageLicenseFile>
 		<Title>DataAccess.SqlServer</Title>
 		<Copyright>MIT</Copyright>
 		<PackageProjectUrl>https://github.com/touhidalam69/DataAccess_SqlServer</PackageProjectUrl>
-		<PackageReleaseNotes>Bug Fixed and some basic info added</PackageReleaseNotes>
+		<PackageReleaseNotes>Bug Fixed</PackageReleaseNotes>
 		<PackageIcon>TA.DataAccess.SqlServer.png</PackageIcon>
+		<PackAsTool>False</PackAsTool>
 	</PropertyGroup>
 	<ItemGroup>
 	  <None Include="..\..\LICENSE">
