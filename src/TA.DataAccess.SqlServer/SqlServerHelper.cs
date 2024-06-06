@@ -192,7 +192,7 @@ namespace TA.DataAccess.SqlServer
             return models;
         }
 
-        public T GetModelById<T>(string tableName, string idColumn, int id) where T : new()
+        public T GetModelById<T>(string tableName, string idColumn, dynamic id) where T : new()
         {
             var query = $"SELECT * FROM {tableName} WHERE {idColumn} = @Id";
             var parameters = new[] { new SqlParameter("@Id", id) };
@@ -217,24 +217,19 @@ namespace TA.DataAccess.SqlServer
             return model;
         }
 
-        public int UpdateModel<T>(T model, string tableName, string idColumn, int id)
+        public int UpdateModel<T>(T model, string tableName, string idColumn)
         {
             var properties = GetCrudProperties<T>();
             var setClause = string.Join(", ", properties.Select(p => $"{p.Name} = @{p.Name}"));
-
             var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @Id";
-
             var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToList();
-            parameters.Add(new SqlParameter("@Id", id));
-
             return ExecuteNonQuery(query, parameters.ToArray());
         }
 
-        public int DeleteModel(string tableName, string idColumn, int id)
+        public int DeleteModel(string tableName, string idColumn, dynamic id)
         {
             var query = $"DELETE FROM {tableName} WHERE {idColumn} = @Id";
             var parameters = new[] { new SqlParameter("@Id", id) };
-
             return ExecuteNonQuery(query, parameters);
         }
 
@@ -253,9 +248,9 @@ namespace TA.DataAccess.SqlServer
         int InsertModel<T>(T model, string tableName);
         int InsertModels<T>(List<T> models, string tableName);
         List<T> GetAllModels<T>(string tableName) where T : new();
-        T GetModelById<T>(string tableName, string idColumn, int id) where T : new();
-        int UpdateModel<T>(T model, string tableName, string idColumn, int id);
-        int DeleteModel(string tableName, string idColumn, int id);
+        T GetModelById<T>(string tableName, string idColumn, dynamic id) where T : new();
+        int UpdateModel<T>(T model, string tableName, string idColumn);
+        int DeleteModel(string tableName, string idColumn, dynamic id);
     }
 
     public sealed class NoCrudAttribute : Attribute
