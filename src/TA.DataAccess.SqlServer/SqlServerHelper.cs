@@ -93,7 +93,7 @@ namespace TA.DataAccess.SqlServer
 
         public List<T> Select<T>(string query, SqlParameter[] parameters = null) where T : new()
         {
-            var dataTable = Select(query);
+            var dataTable = Select(query, parameters);
             var models = new List<T>();
             foreach (DataRow row in dataTable.Rows)
             {
@@ -221,7 +221,7 @@ namespace TA.DataAccess.SqlServer
         {
             var properties = GetCrudProperties<T>();
             var setClause = string.Join(", ", properties.Select(p => $"{p.Name} = @{p.Name}"));
-            var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @Id";
+            var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @{idColumn}";
             var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToList();
             return ExecuteNonQuery(query, parameters.ToArray());
         }
