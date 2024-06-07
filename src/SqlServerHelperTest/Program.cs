@@ -19,15 +19,15 @@ class Program
         try
         {
             // Test ExecuteNonQuery with a single query
-            string createTableQuery = "CREATE TABLE TestTable (Id INT PRIMARY KEY, Name NVARCHAR(50))";
+            string createTableQuery = "CREATE TABLE TestTable (PId INT PRIMARY KEY, Name NVARCHAR(50))";
             _sqlServerHelper.ExecuteNonQuery(createTableQuery);
             Console.WriteLine("Table created successfully.");
 
             // Test ExecuteNonQuery with multiple queries
             var queries = new List<string>
             {
-                "INSERT INTO TestTable (Id, Name) VALUES (1, 'Test Name 1')",
-                "INSERT INTO TestTable (Id, Name) VALUES (2, 'Test Name 2')"
+                "INSERT INTO TestTable (PId, Name) VALUES (1, 'Test Name 1')",
+                "INSERT INTO TestTable (PId, Name) VALUES (2, 'Test Name 2')"
             };
             _sqlServerHelper.ExecuteNonQuery(queries);
             Console.WriteLine("Multiple queries executed successfully.");
@@ -38,7 +38,7 @@ class Program
             Console.WriteLine("Select query executed successfully.");
             foreach (DataRow row in dataTable.Rows)
             {
-                Console.WriteLine($"Id: {row["Id"]}, Name: {row["Name"]}");
+                Console.WriteLine($"PId: {row["PId"]}, Name: {row["Name"]}");
             }
 
             // Test Select<T> with a single query
@@ -46,19 +46,19 @@ class Program
             Console.WriteLine("Select<T> query executed successfully.");
             foreach (var result in results)
             {
-                Console.WriteLine($"Id: {result.Id}, Name: {result.Name}");
+                Console.WriteLine($"PId: {result.PId}, Name: {result.Name}");
             }
 
             // Test InsertModel
-            var newModel = new TestModel { Id = 3, Name = "Test Name 3" };
+            var newModel = new TestModel { PId = 3, Name = "Test Name 3" };
             _sqlServerHelper.InsertModel(newModel, "TestTable");
             Console.WriteLine("Model inserted successfully.");
 
             // Test InsertModels
             var newModels = new List<TestModel>
             {
-                new TestModel { Id = 4, Name = "Test Name 4" },
-                new TestModel { Id = 5, Name = "Test Name 5" }
+                new TestModel { PId = 4, Name = "Test Name 4" },
+                new TestModel { PId = 5, Name = "Test Name 5" }
             };
             _sqlServerHelper.InsertModels(newModels, "TestTable");
             Console.WriteLine("Models inserted successfully.");
@@ -68,29 +68,29 @@ class Program
             Console.WriteLine("GetAllModels executed successfully.");
             foreach (var model in allModels)
             {
-                Console.WriteLine($"Id: {model.Id}, Name: {model.Name}");
+                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
             }
 
             // Test GetModelById
-            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "Id", 1);
+            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
             Console.WriteLine("GetModelById executed successfully.");
-            Console.WriteLine($"Id: {modelById.Id}, Name: {modelById.Name}");
+            Console.WriteLine($"PId: {modelById.PId}, Name: {modelById.Name}");
 
             // Test UpdateModel
             modelById.Name = "Updated Test Name 1";
-            _sqlServerHelper.UpdateModel(modelById, "TestTable", "Id");
+            _sqlServerHelper.UpdateModel(modelById, "TestTable", "PId");
             Console.WriteLine("Model updated successfully.");
-            var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "Id", 1);
-            Console.WriteLine($"Id: {updatedModel.Id}, Name: {updatedModel.Name}");
+            var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
+            Console.WriteLine($"PId: {updatedModel.PId}, Name: {updatedModel.Name}");
 
             // Test DeleteModel
-            _sqlServerHelper.DeleteModel("TestTable", "Id",1);
+            _sqlServerHelper.DeleteModel("TestTable", "PId",1);
             Console.WriteLine("Model deleted successfully.");
             var remainingModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
             Console.WriteLine("Remaining models after deletion:");
             foreach (var model in remainingModels)
             {
-                Console.WriteLine($"Id: {model.Id}, Name: {model.Name}");
+                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
             }
 
             // Clean up
@@ -105,7 +105,7 @@ class Program
 
     public class TestModel
     {
-        public int Id { get; set; }
+        public int PId { get; set; }
         public string Name { get; set; }
     }
 }
