@@ -9,9 +9,9 @@ namespace TA.DataAccess.SqlServer
     {
         private readonly string _connectionString;
 
-        public SqlServerHelper(IConfiguration configuration)
+        public SqlServerHelper(IConfiguration configuration, string connectionStringName)
         {
-            _connectionString = configuration.GetConnectionString("DefaultConnection");
+            _connectionString = configuration.GetConnectionString(connectionStringName);
         }
 
         private SqlConnection GetConnection()
@@ -116,7 +116,7 @@ namespace TA.DataAccess.SqlServer
 
         public int InsertModel<T>(T model, string tableName)
         {
-            var properties = GetCrudProperties<T>();
+            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
             var columnNames = string.Join(", ", properties.Select(p => p.Name));
             var parameterNames = string.Join(", ", properties.Select(p => $"@{p.Name}"));
 
@@ -132,7 +132,7 @@ namespace TA.DataAccess.SqlServer
             if (models == null || models.Count == 0)
                 throw new ArgumentException("Models must not be null or empty.");
 
-            var properties = GetCrudProperties<T>();
+            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
             var columnNames = string.Join(", ", properties.Select(p => p.Name));
             var parameterNames = string.Join(", ", properties.Select(p => $"@{p.Name}"));
 
@@ -219,10 +219,22 @@ namespace TA.DataAccess.SqlServer
 
         public int UpdateModel<T>(T model, string tableName, string idColumn)
         {
-            var properties = GetCrudProperties<T>();
+            if (model == null)
+                throw new ArgumentNullException(nameof(model));
+
+            if (string.IsNullOrEmpty(idColumn))
+                throw new ArgumentException("Property name cannot be null or empty.", nameof(idColumn));
+
+            var propertyInfo = typeof(T).GetProperty(idColumn, BindingFlags.Public | BindingFlags.Instance);
+            if (propertyInfo == null)
+                throw new ArgumentException($"Property '{idColumn}' not found on type '{typeof(T).FullName}'.");
+
+
+            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null && p.Name != idColumn);
             var setClause = string.Join(", ", properties.Select(p => $"{p.Name} = @{p.Name}"));
             var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @{idColumn}";
             var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToList();
+            parameters.AddRange(new[] { new SqlParameter($"@{idColumn}", propertyInfo.GetValue(model)) });
             return ExecuteNonQuery(query, parameters.ToArray());
         }
 
@@ -254,6 +266,9 @@ namespace TA.DataAccess.SqlServer
     }
 
     public sealed class NoCrudAttribute : Attribute
+    {
+    }
+    public sealed class IdentityAttribute : Attribute
     {
     }
 }
