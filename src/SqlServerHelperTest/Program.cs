@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using System.Data;
 using TA.DataAccess.SqlServer;
 
@@ -14,12 +15,22 @@ class Program
         IConfiguration configuration = builder.Build();
 
         // Initialize the SQL Server helper
-        var _sqlServerHelper = new SqlServerHelper(configuration);
+        // Set up dependency injection
+        var serviceProvider = new ServiceCollection()
+            .AddSingleton<IConfiguration>(configuration)
+            .AddSingleton<ISqlServerHelper>(sp =>
+            {
+                var config = sp.GetRequiredService<IConfiguration>();
+                var connectionStringName = "DefaultConnection"; // or get this from settings
+                return new SqlServerHelper(config, connectionStringName);
+            })
+            .BuildServiceProvider();
+        var _sqlServerHelper = serviceProvider.GetService<ISqlServerHelper>();
 
         try
         {
             // Test ExecuteNonQuery with a single query
-            string createTableQuery = "CREATE TABLE TestTable (PId INT PRIMARY KEY, Name NVARCHAR(50))";
+            string createTableQuery = "CREATE TABLE TestTable (id int identity(1,1), PId INT PRIMARY KEY, Name NVARCHAR(50))";
             _sqlServerHelper.ExecuteNonQuery(createTableQuery);
             Console.WriteLine("Table created successfully.");
 
@@ -78,7 +89,7 @@ class Program
 
             // Test UpdateModel
             modelById.Name = "Updated Test Name 1";
-            _sqlServerHelper.UpdateModel(modelById, "TestTable", "PId");
+            _sqlServerHelper.UpdateModel(modelById, "TestTable", "id");
             Console.WriteLine("Model updated successfully.");
             var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
             Console.WriteLine($"PId: {updatedModel.PId}, Name: {updatedModel.Name}");
@@ -105,7 +116,11 @@ class Program
 
     public class TestModel
     {
+        [Identity]
+        public int id { get; set; }
         public int PId { get; set; }
         public string Name { get; set; }
+        [NoCrud]
+        public string FName { get; set; }
     }
 }
