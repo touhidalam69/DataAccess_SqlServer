@@ -9,7 +9,7 @@ TA.DataAccess.SqlServer is a comprehensive .NET library designed to simplify dat
 - Retrieve data as `DataTable`
 - Retrieve data as a list of strongly-typed models
 - Insert, update, and delete models
-- Use custom attributes to exclude properties from CRUD operations
+- Use custom attributes to exclude properties from CRUD operations or mark properties as identity columns
 
 ## Installation
 
@@ -34,16 +34,64 @@ Ensure your appsettings.json has the connection string:
 
 ```
 
-
-
 ## Dependency Injection
 Register the SqlServerHelper in your Startup.cs or Program.cs:
 
 ```sh
 public void ConfigureServices(IServiceCollection services)
 {
-    services.AddSingleton<ISqlServerHelper, SqlServerHelper>();  
+    services.AddSingleton<ISqlServerHelper, SqlServerHelper>(sp =>
+    {
+        var configuration = sp.GetRequiredService<IConfiguration>();
+        return new SqlServerHelper(configuration, "DefaultConnection");
+    });
 }
+
+```
+
+For console applications, configure dependency injection like this:
+
+```sh
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.IO;
+
+namespace YourNamespace
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            // Set up configuration
+            var configuration = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .Build();
+
+            // Set up dependency injection
+            var serviceProvider = new ServiceCollection()
+                .AddSingleton<IConfiguration>(configuration)
+                .AddSingleton<ISqlServerHelper, SqlServerHelper>(sp =>
+                {
+                    var config = sp.GetRequiredService<IConfiguration>();
+                    return new SqlServerHelper(config, "DefaultConnection");
+                })
+                .BuildServiceProvider();
+
+            // Resolve and use your service
+            var sqlServerHelper = serviceProvider.GetService<ISqlServerHelper>();
+
+            // Example usage
+            var myService = new MyService(sqlServerHelper);
+            myService.ExecuteSampleQueries();
+
+            // Keep the console window open
+            Console.ReadLine();
+        }
+    }
+}
+
 
 ```
 
@@ -65,62 +113,87 @@ public class MyService
 
     public void ExecuteSampleQueries()
     {
-            // Test ExecuteNonQuery with a single query
-            string createTableQuery = "CREATE TABLE TestTable (Id INT PRIMARY KEY, Name NVARCHAR(50))";
+            // ExecuteNonQuery with a single query
+            string createTableQuery = "CREATE TABLE TestTable (id int identity(1,1), PId INT PRIMARY KEY, Name NVARCHAR(50))";
             _sqlServerHelper.ExecuteNonQuery(createTableQuery);
+            Console.WriteLine("Table created successfully.");
 
-            // Test ExecuteNonQuery with multiple queries
+            // ExecuteNonQuery with multiple queries
             var queries = new List<string>
             {
-                "INSERT INTO TestTable (Id, Name) VALUES (1, 'Test Name 1')",
-                "INSERT INTO TestTable (Id, Name) VALUES (2, 'Test Name 2')"
+                "INSERT INTO TestTable (PId, Name) VALUES (1, 'Test Name 1')",
+                "INSERT INTO TestTable (PId, Name) VALUES (2, 'Test Name 2')"
             };
             _sqlServerHelper.ExecuteNonQuery(queries);
+            Console.WriteLine("Multiple queries executed successfully.");
 
-            // Test Select with a single query
+            // Select with a single query
             string selectQuery = "SELECT * FROM TestTable";
             var dataTable = _sqlServerHelper.Select(selectQuery);
+            Console.WriteLine("Select query executed successfully.");
+            foreach (DataRow row in dataTable.Rows)
+            {
+                Console.WriteLine($"PId: {row["PId"]}, Name: {row["Name"]}");
+            }
 
-            // Test Select<T> with a single query
+            // Select<T> with a single query
             var results = _sqlServerHelper.Select<TestModel>("SELECT * FROM TestTable");
-            
+            Console.WriteLine("Select<T> query executed successfully.");
+            foreach (var result in results)
+            {
+                Console.WriteLine($"PId: {result.PId}, Name: {result.Name}");
+            }
 
-            // Test InsertModel
-            var newModel = new TestModel { Id = 3, Name = "Test Name 3" };
+            // InsertModel
+            var newModel = new TestModel { PId = 3, Name = "Test Name 3" };
             _sqlServerHelper.InsertModel(newModel, "TestTable");
+            Console.WriteLine("Model inserted successfully.");
 
-            // Test InsertModels
+            // InsertModels
             var newModels = new List<TestModel>
             {
-                new TestModel { Id = 4, Name = "Test Name 4" },
-                new TestModel { Id = 5, Name = "Test Name 5" }
+                new TestModel { PId = 4, Name = "Test Name 4" },
+                new TestModel { PId = 5, Name = "Test Name 5" }
             };
             _sqlServerHelper.InsertModels(newModels, "TestTable");
+            Console.WriteLine("Models inserted successfully.");
 
-            // Test GetAllModels
+            // GetAllModels
             var allModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
+            Console.WriteLine("GetAllModels executed successfully.");
+            foreach (var model in allModels)
+            {
+                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
+            }
 
-            // Test GetModelById
-            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "Id", 1);
+            // GetModelById
+            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
+            Console.WriteLine("GetModelById executed successfully.");
+            Console.WriteLine($"PId: {modelById.PId}, Name: {modelById.Name}");
 
-            // Test UpdateModel
+            // UpdateModel
             modelById.Name = "Updated Test Name 1";
-            _sqlServerHelper.UpdateModel(modelById, "TestTable", "Id");
+            _sqlServerHelper.UpdateModel(modelById, "TestTable", "id");
+            Console.WriteLine("Model updated successfully.");
+            var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
+            Console.WriteLine($"PId: {updatedModel.PId}, Name: {updatedModel.Name}");
 
-            // Test DeleteModel
-            _sqlServerHelper.DeleteModel("TestTable", "Id", 1);
+            // DeleteModel
+            _sqlServerHelper.DeleteModel("TestTable", "PId",1);
+            Console.WriteLine("Model deleted successfully.");
+            var remainingModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
+            Console.WriteLine("Remaining models after deletion:");
+            foreach (var model in remainingModels)
+            {
+                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
+            }
 
             // Clean up
             _sqlServerHelper.ExecuteNonQuery("DROP TABLE TestTable");
+            Console.WriteLine("Table dropped successfully.");
     }
 }
 
-
-public class TestModel
-{
-    public int Id { get; set; }
-    public string Name { get; set; }
-}
 
 ```
 ## Custom Attributes
@@ -128,14 +201,14 @@ You can use the NoCrudAttribute to exclude properties from CRUD operations:
 
 ```sh
 public class TestModel
-{
-    public int Id { get; set; }
-    
-    [NoCrud]
-    public string ExcludedColumn { get; set; }
-    
-    public string Name { get; set; }
-}
+    {
+        [Identity]
+        public int id { get; set; }
+        public int PId { get; set; }
+        public string Name { get; set; }
+        [NoCrud]
+        public string FName { get; set; }
+    }
 ```
 
 ## Contributing
