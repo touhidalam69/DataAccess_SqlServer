@@ -11,7 +11,8 @@ namespace TA.DataAccess.SqlServer
 
         public SqlServerHelper(IConfiguration configuration, string connectionStringName)
         {
-            _connectionString = configuration.GetConnectionString(connectionStringName);
+            _connectionString = configuration.GetConnectionString(connectionStringName)
+                                ?? throw new ArgumentException($"Connection string '{connectionStringName}' not found.");
         }
 
         private SqlConnection GetConnection()
@@ -21,6 +22,8 @@ namespace TA.DataAccess.SqlServer
 
         public int ExecuteNonQuery(string query, SqlParameter[] parameters = null)
         {
+            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+
             using (var connection = GetConnection())
             {
                 using (var command = new SqlCommand(query, connection))
@@ -35,6 +38,7 @@ namespace TA.DataAccess.SqlServer
                 }
             }
         }
+
         public int ExecuteNonQuery(List<string> queries)
         {
             if (queries == null || queries.Count == 0)
@@ -72,6 +76,8 @@ namespace TA.DataAccess.SqlServer
 
         public DataTable Select(string query, SqlParameter[] parameters = null)
         {
+            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+
             using (var connection = GetConnection())
             {
                 using (var command = new SqlCommand(query, connection))
@@ -93,8 +99,11 @@ namespace TA.DataAccess.SqlServer
 
         public List<T> Select<T>(string query, SqlParameter[] parameters = null) where T : new()
         {
+            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+
             var dataTable = Select(query, parameters);
             var models = new List<T>();
+
             foreach (DataRow row in dataTable.Rows)
             {
                 var model = new T();
@@ -116,12 +125,14 @@ namespace TA.DataAccess.SqlServer
 
         public int InsertModel<T>(T model, string tableName)
         {
+            if (model == null) throw new ArgumentNullException(nameof(model));
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+
             var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
             var columnNames = string.Join(", ", properties.Select(p => p.Name));
             var parameterNames = string.Join(", ", properties.Select(p => $"@{p.Name}"));
 
             var query = $"INSERT INTO {tableName} ({columnNames}) VALUES ({parameterNames})";
-
             var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToArray();
 
             return ExecuteNonQuery(query, parameters);
@@ -129,8 +140,8 @@ namespace TA.DataAccess.SqlServer
 
         public int InsertModels<T>(List<T> models, string tableName)
         {
-            if (models == null || models.Count == 0)
-                throw new ArgumentException("Models must not be null or empty.");
+            if (models == null || models.Count == 0) throw new ArgumentException("Models must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
 
             var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
             var columnNames = string.Join(", ", properties.Select(p => p.Name));
@@ -170,10 +181,10 @@ namespace TA.DataAccess.SqlServer
 
         public List<T> GetAllModels<T>(string tableName) where T : new()
         {
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+
             var query = $"SELECT * FROM {tableName}";
-
             var dataTable = Select(query);
-
             var models = new List<T>();
 
             foreach (DataRow row in dataTable.Rows)
@@ -194,15 +205,14 @@ namespace TA.DataAccess.SqlServer
 
         public T GetModelById<T>(string tableName, string idColumn, dynamic id) where T : new()
         {
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
+
             var query = $"SELECT * FROM {tableName} WHERE {idColumn} = @Id";
             var parameters = new[] { new SqlParameter("@Id", id) };
-
             var dataTable = Select(query, parameters);
 
-            if (dataTable.Rows.Count == 0)
-            {
-                return default;
-            }
+            if (dataTable.Rows.Count == 0) return default;
 
             var model = new T();
             var row = dataTable.Rows[0];
@@ -219,27 +229,28 @@ namespace TA.DataAccess.SqlServer
 
         public int UpdateModel<T>(T model, string tableName, string idColumn)
         {
-            if (model == null)
-                throw new ArgumentNullException(nameof(model));
-
-            if (string.IsNullOrEmpty(idColumn))
-                throw new ArgumentException("Property name cannot be null or empty.", nameof(idColumn));
+            if (model == null) throw new ArgumentNullException(nameof(model));
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
 
             var propertyInfo = typeof(T).GetProperty(idColumn, BindingFlags.Public | BindingFlags.Instance);
             if (propertyInfo == null)
                 throw new ArgumentException($"Property '{idColumn}' not found on type '{typeof(T).FullName}'.");
 
-
             var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null && p.Name != idColumn);
             var setClause = string.Join(", ", properties.Select(p => $"{p.Name} = @{p.Name}"));
             var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @{idColumn}";
             var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToList();
-            parameters.AddRange(new[] { new SqlParameter($"@{idColumn}", propertyInfo.GetValue(model)) });
+            parameters.Add(new SqlParameter($"@{idColumn}", propertyInfo.GetValue(model)));
+
             return ExecuteNonQuery(query, parameters.ToArray());
         }
 
         public int DeleteModel(string tableName, string idColumn, dynamic id)
         {
+            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
+
             var query = $"DELETE FROM {tableName} WHERE {idColumn} = @Id";
             var parameters = new[] { new SqlParameter("@Id", id) };
             return ExecuteNonQuery(query, parameters);
@@ -251,6 +262,7 @@ namespace TA.DataAccess.SqlServer
                 .Where(p => p.GetCustomAttribute<NoCrudAttribute>() == null);
         }
     }
+
     public interface ISqlServerHelper
     {
         int ExecuteNonQuery(string query, SqlParameter[] parameters = null);
@@ -268,6 +280,7 @@ namespace TA.DataAccess.SqlServer
     public sealed class NoCrudAttribute : Attribute
     {
     }
+
     public sealed class IdentityAttribute : Attribute
     {
     }
