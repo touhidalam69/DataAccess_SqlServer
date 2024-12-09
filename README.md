@@ -20,6 +20,9 @@ dotnet add package TA.DataAccess.SqlServer
 
 PM> NuGet\Install-Package TA.DataAccess.SqlServer
 ```
+For detailed documentation and examples, visit the following link:
+
+- [Simplifying SQL Server Database Operations for .NET Developers](https://touhidalam.com/simplifying-sql-server-database-operations-for-net-developers/)
 
 ## Usage
 ### Configuration
