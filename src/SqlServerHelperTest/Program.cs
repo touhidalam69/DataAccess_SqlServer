@@ -1,130 +1,112 @@
-﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System.Data;
 using TA.DataAccess.SqlServer;
 
 namespace SqlServerHelperTest
 {
-    class Program
+    internal static class Program
     {
-       static async Task Main(string[] args)
+        private static async Task Main()
         {
-            // Build configuration
-            var builder = new ConfigurationBuilder()
+            using var cts = new ConsoleCancellation();
+
+            var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+                .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                .Build();
 
-            IConfiguration configuration = builder.Build();
-
-            // Initialize the SQL Server helper
-            // Set up dependency injection
-            var serviceProvider = new ServiceCollection()
+            await using var serviceProvider = new ServiceCollection()
                 .AddSingleton<IConfiguration>(configuration)
+                .AddLogging(b => b.AddSimpleConsole().SetMinimumLevel(LogLevel.Debug))
                 .AddSingleton<ISqlServerHelper>(sp =>
                 {
                     var config = sp.GetRequiredService<IConfiguration>();
-                    var connectionStringName = "DefaultConnection"; // or get this from settings
-                    return new SqlServerHelper(config, connectionStringName);
+                    var logger = sp.GetRequiredService<ILogger<SqlServerHelper>>();
+                    return new SqlServerHelper(config, "DefaultConnection", new SqlServerHelperOptions { LogParameters = true }, logger);
                 })
                 .BuildServiceProvider();
-            var _sqlServerHelper = serviceProvider.GetService<ISqlServerHelper>();
+
+            var helper = serviceProvider.GetRequiredService<ISqlServerHelper>();
+            var token = cts.Token;
 
             try
             {
-                // Test ExecuteNonQuery with a single query
-                string createTableQuery = "CREATE TABLE TestTable (id int identity(1,1), PId INT PRIMARY KEY, Name NVARCHAR(50))";
-                await _sqlServerHelper.ExecuteNonQueryAsync(createTableQuery);
-                Console.WriteLine("Table created successfully.");
+                await helper.ExecuteNonQueryAsync(
+                    "CREATE TABLE TestTable (id int identity(1,1), PId INT PRIMARY KEY, Name NVARCHAR(50))",
+                    cancellationToken: token);
 
-                // Test ExecuteNonQuery with multiple queries
-                var queries = new List<string>
-            {
-                "INSERT INTO TestTable (PId, Name) VALUES (1, 'Test Name 1')",
-                "INSERT INTO TestTable (PId, Name) VALUES (2, 'Test Name 2')"
-            };
-                await _sqlServerHelper.ExecuteNonQueryAsync(queries);
-                Console.WriteLine("Multiple queries executed successfully.");
+                await helper.ExecuteNonQueryAsync(new[]
+                {
+                    "INSERT INTO TestTable (PId, Name) VALUES (1, 'Test Name 1')",
+                    "INSERT INTO TestTable (PId, Name) VALUES (2, 'Test Name 2')",
+                }, token);
 
-                // Test Select with a single query
-                string selectQuery = "SELECT * FROM TestTable";
-                var dataTable = await _sqlServerHelper.SelectAsync(selectQuery);
-                Console.WriteLine("Select query executed successfully.");
+                var dataTable = await helper.SelectAsync("SELECT * FROM TestTable", cancellationToken: token);
                 foreach (DataRow row in dataTable.Rows)
-                {
                     Console.WriteLine($"PId: {row["PId"]}, Name: {row["Name"]}");
-                }
 
-                // Test Select<T> with a single query
-                var results = _sqlServerHelper.Select<TestModel>("SELECT * FROM TestTable");
-                Console.WriteLine("Select<T> query executed successfully.");
-                foreach (var result in results)
+                await foreach (var item in helper.SelectStreamAsync<TestModel>("SELECT * FROM TestTable", cancellationToken: token))
+                    Console.WriteLine($"streamed PId: {item.PId}, Name: {item.Name}");
+
+                await helper.InsertModelAsync(new TestModel { PId = 3, Name = "Test Name 3" }, "TestTable", token);
+
+                var batch = new List<TestModel>
                 {
-                    Console.WriteLine($"PId: {result.PId}, Name: {result.Name}");
-                }
+                    new() { PId = 4, Name = "Test Name 4" },
+                    new() { PId = 5, Name = "Test Name 5" },
+                };
+                await helper.InsertModelsAsync(batch, "TestTable", token);
 
-                // Test InsertModel
-                var newModel = new TestModel { PId = 3, Name = "Test Name 3" };
-                _sqlServerHelper.InsertModel(newModel, "TestTable");
-                Console.WriteLine("Model inserted successfully.");
-
-                // Test InsertModels
-                var newModels = new List<TestModel>
-            {
-                new TestModel { PId = 4, Name = "Test Name 4" },
-                new TestModel { PId = 5, Name = "Test Name 5" }
-            };
-                _sqlServerHelper.InsertModels(newModels, "TestTable");
-                Console.WriteLine("Models inserted successfully.");
-
-                // Test GetAllModels
-                var allModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
-                Console.WriteLine("GetAllModels executed successfully.");
-                foreach (var model in allModels)
-                {
-                    Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
-                }
-
-                // Test GetModelById
-                var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
-                Console.WriteLine("GetModelById executed successfully.");
-                Console.WriteLine($"PId: {modelById.PId}, Name: {modelById.Name}");
-
-                // Test UpdateModel
+                var modelById = await helper.GetModelByIdAsync<TestModel>("TestTable", "PId", 1, token)
+                    ?? throw new InvalidOperationException("Row PId=1 not found.");
                 modelById.Name = "Updated Test Name 1";
-                _sqlServerHelper.UpdateModel(modelById, "TestTable", "id");
-                Console.WriteLine("Model updated successfully.");
-                var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
-                Console.WriteLine($"PId: {updatedModel.PId}, Name: {updatedModel.Name}");
+                await helper.UpdateModelAsync(modelById, "TestTable", nameof(TestModel.Id), token);
 
-                // Test DeleteModel
-                _sqlServerHelper.DeleteModel("TestTable", "PId", 1);
-                Console.WriteLine("Model deleted successfully.");
-                var remainingModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
-                Console.WriteLine("Remaining models after deletion:");
-                foreach (var model in remainingModels)
-                {
-                    Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
-                }
+                var deletedRows = await helper.DeleteModelAsync("TestTable", "PId", 1, token);
+                Console.WriteLine($"Deleted {deletedRows} row(s).");
 
-                // Clean up
-                _sqlServerHelper.ExecuteNonQuery("DROP TABLE TestTable");
-                Console.WriteLine("Table dropped successfully.");
-
+                await helper.ExecuteInterpolatedAsync($"DROP TABLE TestTable", token);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"An error occurred: {ex.Message}");
             }
         }
-    }
 
-    public class TestModel
-    {
-        [Identity]
-        public int id { get; set; }
-        public int PId { get; set; }
-        public string Name { get; set; }
-        [NoCrud]
-        public string FName { get; set; }
+        public sealed class TestModel
+        {
+            [Identity]
+            public int Id { get; set; }
+            public int PId { get; set; }
+            public string Name { get; set; } = string.Empty;
+            [NoCrud]
+            public string? FName { get; set; }
+        }
+
+        private sealed class ConsoleCancellation : IDisposable
+        {
+            private readonly CancellationTokenSource _cts = new();
+
+            public ConsoleCancellation()
+            {
+                Console.CancelKeyPress += OnCancelKeyPress;
+            }
+
+            public CancellationToken Token => _cts.Token;
+
+            private void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+                _cts.Cancel();
+            }
+
+            public void Dispose()
+            {
+                Console.CancelKeyPress -= OnCancelKeyPress;
+                _cts.Dispose();
+            }
+        }
     }
 }

@@ -1,407 +1,541 @@
-﻿using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
 using System.Data;
-using System.Reflection;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace TA.DataAccess.SqlServer
 {
-    public class SqlServerHelper : ISqlServerHelper
+    public sealed class SqlServerHelper : ISqlServerHelper
     {
         private readonly string _connectionString;
+        private readonly SqlServerHelperOptions _options;
+        private readonly ILogger<SqlServerHelper> _logger;
 
         public SqlServerHelper(IConfiguration configuration, string connectionStringName)
+            : this(configuration, connectionStringName, options: null, logger: null) { }
+
+        public SqlServerHelper(
+            IConfiguration configuration,
+            string connectionStringName,
+            SqlServerHelperOptions? options,
+            ILogger<SqlServerHelper>? logger)
         {
+            if (configuration is null) throw new ArgumentNullException(nameof(configuration));
+            if (string.IsNullOrWhiteSpace(connectionStringName)) throw new ArgumentException("Connection string name required.", nameof(connectionStringName));
+
             _connectionString = configuration.GetConnectionString(connectionStringName)
-                                ?? throw new ArgumentException($"Connection string '{connectionStringName}' not found.");
+                ?? throw new ArgumentException($"Connection string '{connectionStringName}' not found.", nameof(connectionStringName));
+            _options = options ?? new SqlServerHelperOptions();
+            _logger = logger ?? NullLogger<SqlServerHelper>.Instance;
         }
 
-        private SqlConnection GetConnection()
+        public SqlServerHelper(string connectionString, SqlServerHelperOptions? options = null, ILogger<SqlServerHelper>? logger = null)
         {
-            return new SqlConnection(_connectionString);
+            if (string.IsNullOrWhiteSpace(connectionString)) throw new ArgumentException("Connection string required.", nameof(connectionString));
+            _connectionString = connectionString;
+            _options = options ?? new SqlServerHelperOptions();
+            _logger = logger ?? NullLogger<SqlServerHelper>.Instance;
         }
 
-        public int ExecuteNonQuery(string query, SqlParameter[] parameters = null)
-        {
-            if (string.IsNullOrWhiteSpace(query))
-                throw new ArgumentException("Query must not be null or empty.");
+        private SqlConnection NewConnection() => new(_connectionString);
 
+        private SqlCommand NewCommand(string commandText, SqlConnection connection, SqlTransaction? transaction = null)
+        {
+            var command = new SqlCommand(commandText, connection, transaction)
+            {
+                CommandTimeout = _options.CommandTimeoutSeconds,
+            };
+            return command;
+        }
+
+        public int ExecuteNonQuery(string query, SqlParameter[]? parameters = null)
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            connection.Open();
+            return Time(query, parameters, command.ExecuteNonQuery);
+        }
+
+        public async Task<int> ExecuteNonQueryAsync(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default)
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return await TimeAsync(query, parameters, () => command.ExecuteNonQueryAsync(cancellationToken)).ConfigureAwait(false);
+        }
+
+        public int ExecuteNonQuery(IReadOnlyList<string> queries)
+        {
+            EnsureQueries(queries);
+            using var connection = NewConnection();
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+            using var command = NewCommand(string.Empty, connection, transaction);
             try
             {
-                using (var connection = GetConnection())
+                int rowsAffected = 0;
+                foreach (var query in queries)
                 {
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        if (parameters != null)
-                        {
-                            command.Parameters.AddRange(parameters);
-                        }
-
-                        connection.Open();
-                        return command.ExecuteNonQuery();
-                    }
+                    command.CommandText = query;
+                    command.Parameters.Clear();
+                    rowsAffected += command.ExecuteNonQuery();
                 }
+                transaction.Commit();
+                return rowsAffected;
             }
-            catch (SqlException ex)
+            catch
             {
-                // Log exception here
-                throw new Exception("An error occurred while executing the SQL command.", ex);
+                transaction.Rollback();
+                throw;
             }
         }
 
-        public async Task<int> ExecuteNonQueryAsync(string query, SqlParameter[] parameters = null)
+        public async Task<int> ExecuteNonQueryAsync(IReadOnlyList<string> queries, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(query))
-                throw new ArgumentException("Query must not be null or empty.");
-
+            EnsureQueries(queries);
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            using var command = NewCommand(string.Empty, connection, transaction);
             try
             {
-                using (var connection = GetConnection())
+                int rowsAffected = 0;
+                foreach (var query in queries)
                 {
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        if (parameters != null)
-                        {
-                            command.Parameters.AddRange(parameters);
-                        }
-
-                        await connection.OpenAsync();
-                        return await command.ExecuteNonQueryAsync();
-                    }
+                    command.CommandText = query;
+                    command.Parameters.Clear();
+                    rowsAffected += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return rowsAffected;
             }
-            catch (SqlException ex)
+            catch
             {
-                // Log exception here
-                throw new Exception("An error occurred while executing the SQL command.", ex);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
             }
         }
 
-        public int ExecuteNonQuery(List<string> queries)
+        public int ExecuteInterpolated(FormattableString query)
         {
-            if (queries == null || queries.Count == 0)
-                throw new ArgumentException("Queries must not be null or empty.");
-
-            using (var connection = GetConnection())
-            {
-                connection.Open();
-                using (var transaction = connection.BeginTransaction())
-                {
-                    using (var command = connection.CreateCommand())
-                    {
-                        command.Transaction = transaction;
-                        try
-                        {
-                            int rowsAffected = 0;
-                            foreach (var query in queries)
-                            {
-                                command.CommandText = query;
-                                command.Parameters.Clear();
-                                rowsAffected += command.ExecuteNonQuery();
-                            }
-                            transaction.Commit();
-                            return rowsAffected;
-                        }
-                        catch (Exception ex)
-                        {
-                            // Log the exception here
-                            transaction.Rollback();
-                            throw new Exception("An error occurred while executing the SQL commands.", ex);
-                        }
-                    }
-                }
-            }
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return ExecuteNonQuery(sql, parameters);
         }
 
-        public async Task<int> ExecuteNonQueryAsync(List<string> queries)
+        public Task<int> ExecuteInterpolatedAsync(FormattableString query, CancellationToken cancellationToken = default)
         {
-            if (queries == null || queries.Count == 0)
-                throw new ArgumentException("Queries must not be null or empty.");
-
-            using (var connection = GetConnection())
-            {
-                await connection.OpenAsync();
-                using (var transaction = (SqlTransaction) await connection.BeginTransactionAsync())
-                {
-                    using (var command = connection.CreateCommand())
-                    {
-                        command.Transaction = transaction;
-                        try
-                        {
-                            int rowsAffected = 0;
-                            foreach (var query in queries)
-                            {
-                                command.CommandText = query;
-                                command.Parameters.Clear();
-                                rowsAffected += await command.ExecuteNonQueryAsync();
-                            }
-                            await transaction.CommitAsync();
-                            return rowsAffected;
-                        }
-                        catch (Exception ex)
-                        {
-                            // Log the exception here
-                            await transaction.RollbackAsync();
-                            throw new Exception("An error occurred while executing the SQL commands.", ex);
-                        }
-                    }
-                }
-            }
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return ExecuteNonQueryAsync(sql, parameters, cancellationToken);
         }
 
-        public DataTable Select(string query, SqlParameter[] parameters = null)
+        public DataTable Select(string query, SqlParameter[]? parameters = null)
         {
-            if (string.IsNullOrWhiteSpace(query))
-                throw new ArgumentException("Query must not be null or empty.");
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            using var adapter = new SqlDataAdapter(command);
+            var dataTable = new DataTable();
+            adapter.Fill(dataTable);
+            return dataTable;
+        }
 
+        public async Task<DataTable> SelectAsync(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default)
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var dataTable = new DataTable();
+            dataTable.Load(reader);
+            return dataTable;
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public List<T> Select<T>(string query, SqlParameter[]? parameters = null) where T : new()
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            connection.Open();
+            using var reader = command.ExecuteReader();
+            return ReaderMapper.MapAll<T>(reader);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public async Task<List<T>> SelectAsync<T>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T : new()
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            return await ReaderMapper.MapAllAsync<T>(reader, cancellationToken).ConfigureAwait(false);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public async IAsyncEnumerable<T> SelectStreamAsync<T>(
+            string query,
+            SqlParameter[]? parameters = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : new()
+        {
+            EnsureQuery(query);
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = NewCommand(query, connection);
+            AddParameters(command, parameters);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            await foreach (var model in ReaderMapper.StreamAsync<T>(reader, cancellationToken).ConfigureAwait(false))
+                yield return model;
+        }
+
+        [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
+        public int InsertModel<T>(T model, string? tableName = null)
+        {
+            var (sql, parameters) = BuildInsert(model, tableName);
+            return ExecuteNonQuery(sql, parameters);
+        }
+
+        [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
+        public Task<int> InsertModelAsync<T>(T model, string? tableName = null, CancellationToken cancellationToken = default)
+        {
+            var (sql, parameters) = BuildInsert(model, tableName);
+            return ExecuteNonQueryAsync(sql, parameters, cancellationToken);
+        }
+
+        [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
+        public int InsertModels<T>(IReadOnlyList<T> models, string? tableName = null)
+        {
+            EnsureModels(models);
+            var metadata = ModelMetadataCache.Get<T>();
+            var sql = BuildInsertSql(metadata, tableName);
+
+            using var connection = NewConnection();
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+            using var command = NewCommand(sql, connection, transaction);
             try
             {
-                using (var connection = GetConnection())
+                int rowsAffected = 0;
+                foreach (var model in models)
                 {
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        if (parameters != null)
-                        {
-                            command.Parameters.AddRange(parameters);
-                        }
-
-                        using (var adapter = new SqlDataAdapter(command))
-                        {
-                            var dataTable = new DataTable();
-                            adapter.Fill(dataTable);
-                            return dataTable;
-                        }
-                    }
+                    command.Parameters.Clear();
+                    foreach (var column in metadata.InsertableColumns)
+                        command.Parameters.AddWithValue($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!)));
+                    rowsAffected += command.ExecuteNonQuery();
                 }
+                transaction.Commit();
+                return rowsAffected;
             }
-            catch (Exception ex)
+            catch
             {
-                // Log the exception here
-                throw new Exception("An error occurred while executing the SQL query.", ex);
+                transaction.Rollback();
+                throw;
             }
         }
 
-        public async Task<DataTable> SelectAsync(string query, SqlParameter[] parameters = null)
+        [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
+        public async Task<int> InsertModelsAsync<T>(IReadOnlyList<T> models, string? tableName = null, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(query))
-                throw new ArgumentException("Query must not be null or empty.");
+            EnsureModels(models);
+            var metadata = ModelMetadataCache.Get<T>();
+            var sql = BuildInsertSql(metadata, tableName);
 
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            using var command = NewCommand(sql, connection, transaction);
             try
             {
-                using (var connection = GetConnection())
+                int rowsAffected = 0;
+                foreach (var model in models)
                 {
-                    await connection.OpenAsync();
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        if (parameters != null)
-                        {
-                            command.Parameters.AddRange(parameters);
-                        }
-
-                        using (var adapter = new SqlDataAdapter(command))
-                        {
-                            var dataTable = new DataTable();
-                            await Task.Run(() => adapter.Fill(dataTable));
-                            return dataTable;
-                        }
-                    }
+                    command.Parameters.Clear();
+                    foreach (var column in metadata.InsertableColumns)
+                        command.Parameters.AddWithValue($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!)));
+                    rowsAffected += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return rowsAffected;
             }
-            catch (Exception ex)
+            catch
             {
-                // Log the exception here
-                throw new Exception("An error occurred while executing the SQL query.", ex);
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                throw;
             }
         }
 
-        public List<T> Select<T>(string query, SqlParameter[] parameters = null) where T : new()
+        [RequiresUnreferencedCode("Bulk inserts properties of T via reflection.")]
+        public async Task<int> BulkInsertAsync<T>(IReadOnlyList<T> models, string? tableName = null, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+            EnsureModels(models);
+            var metadata = ModelMetadataCache.Get<T>();
+            var table = ResolveTableName(tableName, metadata);
 
-            var dataTable = Select(query, parameters);
-            var models = new List<T>();
+            using var dataTable = BuildBulkDataTable(metadata, models);
 
-            foreach (DataRow row in dataTable.Rows)
+            using var connection = NewConnection();
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var bulk = new SqlBulkCopy(connection)
             {
-                var model = new T();
-                foreach (var prop in typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    if (dataTable.Columns.Contains(prop.Name) && row[prop.Name] != DBNull.Value)
-                    {
-                        if (prop.PropertyType == typeof(DateTime))
-                            prop.SetValue(model, Convert.ToDateTime(row[prop.Name]));
-                        else
-                            prop.SetValue(model, row[prop.Name]);
-                    }
-                }
-                models.Add(model);
-            }
+                DestinationTableName = table,
+                BatchSize = _options.BulkCopyBatchSize,
+                BulkCopyTimeout = _options.BulkCopyTimeoutSeconds,
+            };
+            foreach (DataColumn column in dataTable.Columns)
+                bulk.ColumnMappings.Add(column.ColumnName, column.ColumnName);
 
-            return models;
+            await bulk.WriteToServerAsync(dataTable, cancellationToken).ConfigureAwait(false);
+            return models.Count;
         }
 
-        public int InsertModel<T>(T model, string tableName)
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public List<T> GetAllModels<T>(string? tableName = null) where T : new()
         {
-            if (model == null) throw new ArgumentNullException(nameof(model));
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
-
-            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
-            var columnNames = string.Join(", ", properties.Select(p => p.Name));
-            var parameterNames = string.Join(", ", properties.Select(p => $"@{p.Name}"));
-
-            var query = $"INSERT INTO {tableName} ({columnNames}) VALUES ({parameterNames})";
-            var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToArray();
-
-            return ExecuteNonQuery(query, parameters);
+            var metadata = ModelMetadataCache.Get<T>();
+            var sql = $"SELECT * FROM {ResolveTableName(tableName, metadata)}";
+            return Select<T>(sql);
         }
 
-        public int InsertModels<T>(List<T> models, string tableName)
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<List<T>> GetAllModelsAsync<T>(string? tableName = null, CancellationToken cancellationToken = default) where T : new()
         {
-            if (models == null || models.Count == 0) throw new ArgumentException("Models must not be null or empty.");
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+            var metadata = ModelMetadataCache.Get<T>();
+            var sql = $"SELECT * FROM {ResolveTableName(tableName, metadata)}";
+            return SelectAsync<T>(sql, parameters: null, cancellationToken);
+        }
 
-            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null);
-            var columnNames = string.Join(", ", properties.Select(p => p.Name));
-            var parameterNames = string.Join(", ", properties.Select(p => $"@{p.Name}"));
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public T? GetModelById<T>(string tableName, string idColumn, object id) where T : new()
+        {
+            var (sql, parameters) = BuildSelectById(tableName, idColumn, id);
+            var results = Select<T>(sql, parameters);
+            return results.Count > 0 ? results[0] : default;
+        }
 
-            var query = $"INSERT INTO {tableName} ({columnNames}) VALUES ({parameterNames})";
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public async Task<T?> GetModelByIdAsync<T>(string tableName, string idColumn, object id, CancellationToken cancellationToken = default) where T : new()
+        {
+            var (sql, parameters) = BuildSelectById(tableName, idColumn, id);
+            var results = await SelectAsync<T>(sql, parameters, cancellationToken).ConfigureAwait(false);
+            return results.Count > 0 ? results[0] : default;
+        }
 
-            using (var connection = GetConnection())
+        [RequiresUnreferencedCode("Updates properties of T via reflection.")]
+        public int UpdateModel<T>(T model, string? tableName = null, string? idColumn = null)
+        {
+            var (sql, parameters) = BuildUpdate(model, tableName, idColumn);
+            return ExecuteNonQuery(sql, parameters);
+        }
+
+        [RequiresUnreferencedCode("Updates properties of T via reflection.")]
+        public Task<int> UpdateModelAsync<T>(T model, string? tableName = null, string? idColumn = null, CancellationToken cancellationToken = default)
+        {
+            var (sql, parameters) = BuildUpdate(model, tableName, idColumn);
+            return ExecuteNonQueryAsync(sql, parameters, cancellationToken);
+        }
+
+        public int DeleteModel(string tableName, string idColumn, object id)
+        {
+            var (sql, parameters) = BuildDelete(tableName, idColumn, id);
+            return ExecuteNonQuery(sql, parameters);
+        }
+
+        public Task<int> DeleteModelAsync(string tableName, string idColumn, object id, CancellationToken cancellationToken = default)
+        {
+            var (sql, parameters) = BuildDelete(tableName, idColumn, id);
+            return ExecuteNonQueryAsync(sql, parameters, cancellationToken);
+        }
+
+        [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
+        private static (string Sql, SqlParameter[] Parameters) BuildInsert<T>(T model, string? tableName)
+        {
+            if (model is null) throw new ArgumentNullException(nameof(model));
+            var metadata = ModelMetadataCache.Get<T>();
+            var sql = BuildInsertSql(metadata, tableName);
+            var parameters = metadata.InsertableColumns
+                .Select(c => new SqlParameter($"@{c.PropertyName}", ValueCoercion.ToDbValue(c.Getter(model!))))
+                .ToArray();
+            return (sql, parameters);
+        }
+
+        private static string BuildInsertSql(ModelMetadata metadata, string? tableName)
+        {
+            if (metadata.InsertableColumns.Length == 0)
+                throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no insertable columns.");
+
+            var table = ResolveTableName(tableName, metadata);
+            var columnNames = string.Join(", ", metadata.InsertableColumns.Select(c => Identifier.Quote(c.ColumnName)));
+            var parameterNames = string.Join(", ", metadata.InsertableColumns.Select(c => $"@{c.PropertyName}"));
+            return $"INSERT INTO {table} ({columnNames}) VALUES ({parameterNames})";
+        }
+
+        private static (string Sql, SqlParameter[] Parameters) BuildSelectById(string tableName, string idColumn, object id)
+        {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+            var sql = $"SELECT * FROM {Identifier.Quote(tableName)} WHERE {Identifier.Quote(idColumn)} = @Id";
+            return (sql, new[] { new SqlParameter("@Id", ValueCoercion.ToDbValue(id)) });
+        }
+
+        [RequiresUnreferencedCode("Updates properties of T via reflection.")]
+        private static (string Sql, SqlParameter[] Parameters) BuildUpdate<T>(T model, string? tableName, string? idColumn)
+        {
+            if (model is null) throw new ArgumentNullException(nameof(model));
+            var metadata = ModelMetadataCache.Get<T>();
+
+            var keyBinding = idColumn is null
+                ? metadata.KeyColumn ?? throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no [Key] or [Identity] property; pass idColumn explicitly.")
+                : metadata.Columns.FirstOrDefault(c => c.PropertyName == idColumn)
+                  ?? throw new ArgumentException($"Property '{idColumn}' not found on type '{metadata.ModelType.FullName}'.", nameof(idColumn));
+
+            var updatable = metadata.Columns
+                .Where(c => !c.IsIdentity && c.PropertyName != keyBinding.PropertyName)
+                .ToArray();
+            if (updatable.Length == 0)
+                throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no updatable columns.");
+
+            var table = ResolveTableName(tableName, metadata);
+            var setClause = string.Join(", ", updatable.Select(c => $"{Identifier.Quote(c.ColumnName)} = @{c.PropertyName}"));
+            var sql = $"UPDATE {table} SET {setClause} WHERE {Identifier.Quote(keyBinding.ColumnName)} = @{keyBinding.PropertyName}";
+
+            var parameters = new SqlParameter[updatable.Length + 1];
+            for (int i = 0; i < updatable.Length; i++)
+                parameters[i] = new SqlParameter($"@{updatable[i].PropertyName}", ValueCoercion.ToDbValue(updatable[i].Getter(model!)));
+            parameters[^1] = new SqlParameter($"@{keyBinding.PropertyName}", ValueCoercion.ToDbValue(keyBinding.Getter(model!)));
+            return (sql, parameters);
+        }
+
+        private static (string Sql, SqlParameter[] Parameters) BuildDelete(string tableName, string idColumn, object id)
+        {
+            if (id is null) throw new ArgumentNullException(nameof(id));
+            var sql = $"DELETE FROM {Identifier.Quote(tableName)} WHERE {Identifier.Quote(idColumn)} = @Id";
+            return (sql, new[] { new SqlParameter("@Id", ValueCoercion.ToDbValue(id)) });
+        }
+
+        [RequiresUnreferencedCode("Bulk inserts properties of T via reflection.")]
+        private static DataTable BuildBulkDataTable<T>(ModelMetadata metadata, IReadOnlyList<T> models)
+        {
+            var table = new DataTable();
+            foreach (var column in metadata.InsertableColumns)
+                table.Columns.Add(column.ColumnName, column.UnderlyingType);
+
+            foreach (var model in models)
             {
-                connection.Open();
-                using (var transaction = connection.BeginTransaction())
-                {
-                    using (var command = new SqlCommand(query, connection, transaction))
-                    {
-                        try
-                        {
-                            int rowsAffected = 0;
-                            foreach (var model in models)
-                            {
-                                command.Parameters.Clear();
-                                var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToArray();
-                                command.Parameters.AddRange(parameters);
-                                rowsAffected += command.ExecuteNonQuery();
-                            }
-                            transaction.Commit();
-                            return rowsAffected;
-                        }
-                        catch
-                        {
-                            transaction.Rollback();
-                            throw;
-                        }
-                    }
-                }
+                var row = table.NewRow();
+                foreach (var column in metadata.InsertableColumns)
+                    row[column.ColumnName] = ValueCoercion.ToDbValue(column.Getter(model!));
+                table.Rows.Add(row);
             }
+            return table;
         }
 
-        public List<T> GetAllModels<T>(string tableName) where T : new()
+        private static string ResolveTableName(string? explicitTableName, ModelMetadata metadata)
         {
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
+            if (!string.IsNullOrWhiteSpace(explicitTableName))
+                return Identifier.Quote(explicitTableName);
 
-            var query = $"SELECT * FROM {tableName}";
-            var dataTable = Select(query);
-            var models = new List<T>();
-
-            foreach (DataRow row in dataTable.Rows)
+            if (!string.IsNullOrWhiteSpace(metadata.TableName))
             {
-                var model = new T();
-                foreach (var prop in GetCrudProperties<T>())
-                {
-                    if (dataTable.Columns.Contains(prop.Name) && row[prop.Name] != DBNull.Value)
-                    {
-                        prop.SetValue(model, row[prop.Name]);
-                    }
-                }
-                models.Add(model);
+                return string.IsNullOrWhiteSpace(metadata.Schema)
+                    ? Identifier.Quote(metadata.TableName!)
+                    : Identifier.Quote(metadata.Schema + "." + metadata.TableName);
             }
 
-            return models;
+            return Identifier.Quote(metadata.ModelType.Name);
         }
 
-        public T GetModelById<T>(string tableName, string idColumn, dynamic id) where T : new()
+        private static (string Sql, SqlParameter[] Parameters) ParameterizeInterpolation(FormattableString query)
         {
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
-            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
-
-            var query = $"SELECT * FROM {tableName} WHERE {idColumn} = @Id";
-            var parameters = new[] { new SqlParameter("@Id", id) };
-            var dataTable = Select(query, parameters);
-
-            if (dataTable.Rows.Count == 0) return default;
-
-            var model = new T();
-            var row = dataTable.Rows[0];
-            foreach (var prop in GetCrudProperties<T>())
+            if (query is null) throw new ArgumentNullException(nameof(query));
+            var args = query.GetArguments();
+            var names = new string[args.Length];
+            var parameters = new SqlParameter[args.Length];
+            for (int i = 0; i < args.Length; i++)
             {
-                if (dataTable.Columns.Contains(prop.Name) && row[prop.Name] != DBNull.Value)
-                {
-                    prop.SetValue(model, row[prop.Name]);
-                }
+                var name = $"@p{i}";
+                names[i] = name;
+                parameters[i] = new SqlParameter(name, ValueCoercion.ToDbValue(args[i]));
             }
-
-            return model;
+            var sql = string.Format(query.Format, names);
+            return (sql, parameters);
         }
 
-        public int UpdateModel<T>(T model, string tableName, string idColumn)
+        private static void AddParameters(SqlCommand command, SqlParameter[]? parameters)
         {
-            if (model == null) throw new ArgumentNullException(nameof(model));
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
-            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
-
-            var propertyInfo = typeof(T).GetProperty(idColumn, BindingFlags.Public | BindingFlags.Instance);
-            if (propertyInfo == null)
-                throw new ArgumentException($"Property '{idColumn}' not found on type '{typeof(T).FullName}'.");
-
-            var properties = GetCrudProperties<T>().Where(p => p.GetCustomAttribute<IdentityAttribute>() == null && p.Name != idColumn);
-            var setClause = string.Join(", ", properties.Select(p => $"{p.Name} = @{p.Name}"));
-            var query = $"UPDATE {tableName} SET {setClause} WHERE {idColumn} = @{idColumn}";
-            var parameters = properties.Select(p => new SqlParameter($"@{p.Name}", p.GetValue(model) ?? DBNull.Value)).ToList();
-            parameters.Add(new SqlParameter($"@{idColumn}", propertyInfo.GetValue(model)));
-
-            return ExecuteNonQuery(query, parameters.ToArray());
+            if (parameters is null || parameters.Length == 0) return;
+            command.Parameters.AddRange(parameters);
         }
 
-        public int DeleteModel(string tableName, string idColumn, dynamic id)
+        private static void EnsureQuery(string query)
         {
-            if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Table name must not be null or empty.");
-            if (string.IsNullOrWhiteSpace(idColumn)) throw new ArgumentException("ID column name must not be null or empty.");
-
-            var query = $"DELETE FROM {tableName} WHERE {idColumn} = @Id";
-            var parameters = new[] { new SqlParameter("@Id", id) };
-            return ExecuteNonQuery(query, parameters);
+            if (string.IsNullOrWhiteSpace(query))
+                throw new ArgumentException("Query must not be null or empty.", nameof(query));
         }
 
-        private static IEnumerable<PropertyInfo> GetCrudProperties<T>()
+        private static void EnsureQueries(IReadOnlyList<string> queries)
         {
-            return typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.GetCustomAttribute<NoCrudAttribute>() == null);
+            if (queries is null || queries.Count == 0)
+                throw new ArgumentException("Queries must not be null or empty.", nameof(queries));
         }
-    }
 
-    public interface ISqlServerHelper
-    {
-        int ExecuteNonQuery(string query, SqlParameter[] parameters = null);
-        Task<int> ExecuteNonQueryAsync(string query, SqlParameter[] parameters = null);
-        int ExecuteNonQuery(List<string> queries);
-        Task<int> ExecuteNonQueryAsync(List<string> queries);
-        DataTable Select(string query, SqlParameter[] parameters = null);
-        Task<DataTable> SelectAsync(string query, SqlParameter[] parameters = null);
+        private static void EnsureModels<T>(IReadOnlyList<T> models)
+        {
+            if (models is null || models.Count == 0)
+                throw new ArgumentException("Models must not be null or empty.", nameof(models));
+        }
 
-        List<T> Select<T>(string query, SqlParameter[] parameters = null) where T : new();
-        int InsertModel<T>(T model, string tableName);
-        int InsertModels<T>(List<T> models, string tableName);
-        List<T> GetAllModels<T>(string tableName) where T : new();
-        T GetModelById<T>(string tableName, string idColumn, dynamic id) where T : new();
-        int UpdateModel<T>(T model, string tableName, string idColumn);
-        int DeleteModel(string tableName, string idColumn, dynamic id);
-    }
+        private T Time<T>(string sql, SqlParameter[]? parameters, Func<T> action)
+        {
+            if (!_logger.IsEnabled(LogLevel.Debug)) return action();
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                return action();
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogExecution(sql, parameters, stopwatch.ElapsedMilliseconds);
+            }
+        }
 
-    public sealed class NoCrudAttribute : Attribute
-    {
-    }
+        private async Task<T> TimeAsync<T>(string sql, SqlParameter[]? parameters, Func<Task<T>> action)
+        {
+            if (!_logger.IsEnabled(LogLevel.Debug)) return await action().ConfigureAwait(false);
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                return await action().ConfigureAwait(false);
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogExecution(sql, parameters, stopwatch.ElapsedMilliseconds);
+            }
+        }
 
-    public sealed class IdentityAttribute : Attribute
-    {
+        private void LogExecution(string sql, SqlParameter[]? parameters, long elapsedMs)
+        {
+            if (_options.LogParameters && parameters is { Length: > 0 })
+                _logger.LogDebug("SQL executed in {ElapsedMs}ms: {Sql} | params: {Params}", elapsedMs, sql, FormatParameters(parameters));
+            else
+                _logger.LogDebug("SQL executed in {ElapsedMs}ms: {Sql}", elapsedMs, sql);
+        }
+
+        private static string FormatParameters(SqlParameter[] parameters)
+            => string.Join(", ", parameters.Select(p => $"{p.ParameterName}={p.Value}"));
     }
 }

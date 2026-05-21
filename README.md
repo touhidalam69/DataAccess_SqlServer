@@ -1,221 +1,128 @@
 # TA.DataAccess.SqlServer
 
-TA.DataAccess.SqlServer is a comprehensive .NET library designed to simplify database operations with SQL Server. It provides a range of methods to execute queries, retrieve data, and perform CRUD operations using strongly-typed models.
+`TA.DataAccess.SqlServer` is a lightweight, strongly-typed data access helper for SQL Server on modern .NET.
+
+Targets: **net8.0**, **net9.0**, **net10.0**.
 
 ## Features
 
-- Execute non-query commands
-- Execute multiple non-query commands within a transaction
-- Retrieve data as `DataTable`
-- Retrieve data as a list of strongly-typed models
-- Insert, update, and delete models
-- Use custom attributes to exclude properties from CRUD operations or mark properties as identity columns
+- Sync + async CRUD with `CancellationToken` on every async path
+- Identifier hardening (`[bracketed]` + regex validation) against injection
+- `FormattableString` parameterized API (`ExecuteInterpolated`)
+- `IAsyncEnumerable<T>` streaming reads (`SelectStreamAsync`)
+- `SqlBulkCopy` for big inserts (`BulkInsertAsync`)
+- Attribute mapping: `[Table]`, `[Column]`, `[Key]`, `[Identity]`, `[NoCrud]`
+- Expanded type coercion: `DateOnly`, `TimeOnly`, `DateTimeOffset`, `Guid`, enums
+- Cached compiled getters/setters via expression trees
+- `ILogger<SqlServerHelper>` integration with timing
+- Source Link + symbol package for stepping into source from PDB
 
-## Installation
-
-You can install the package via NuGet Package Manager:
+## Install
 
 ```sh
 dotnet add package TA.DataAccess.SqlServer
+```
 
+```powershell
 PM> NuGet\Install-Package TA.DataAccess.SqlServer
 ```
-For detailed documentation and examples, visit the following link:
 
-- [Simplifying SQL Server Database Operations for .NET Developers](https://touhidalam.com/simplifying-sql-server-database-operations-for-net-developers/)
+## Configure
 
-## Usage
-### Configuration
-Ensure your appsettings.json has the connection string:
+`appsettings.json`:
 
-```sh
+```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Your Connection String Here"
+    "DefaultConnection": "Server=.;Database=App;Trusted_Connection=True;TrustServerCertificate=True"
   }
 }
-
 ```
 
-## Dependency Injection
-Register the SqlServerHelper in your Startup.cs or Program.cs:
+DI registration:
 
-```sh
-public void ConfigureServices(IServiceCollection services)
+```csharp
+services.AddSingleton<ISqlServerHelper>(sp =>
 {
-    services.AddSingleton<ISqlServerHelper, SqlServerHelper>(sp =>
-    {
-        var configuration = sp.GetRequiredService<IConfiguration>();
-        return new SqlServerHelper(configuration, "DefaultConnection");
-    });
-}
-
+    var config = sp.GetRequiredService<IConfiguration>();
+    var logger = sp.GetRequiredService<ILogger<SqlServerHelper>>();
+    var options = new SqlServerHelperOptions { CommandTimeoutSeconds = 60 };
+    return new SqlServerHelper(config, "DefaultConnection", options, logger);
+});
 ```
 
-For console applications, configure dependency injection like this:
+## Model mapping
 
-```sh
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using System;
-using System.IO;
-
-namespace YourNamespace
+```csharp
+[Table("Products", Schema = "catalog")]
+public record class Product
 {
-    class Program
-    {
-        static void Main(string[] args)
-        {
-            // Set up configuration
-            var configuration = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .Build();
-
-            // Set up dependency injection
-            var serviceProvider = new ServiceCollection()
-                .AddSingleton<IConfiguration>(configuration)
-                .AddSingleton<ISqlServerHelper, SqlServerHelper>(sp =>
-                {
-                    var config = sp.GetRequiredService<IConfiguration>();
-                    return new SqlServerHelper(config, "DefaultConnection");
-                })
-                .BuildServiceProvider();
-
-            // Resolve and use your service
-            var sqlServerHelper = serviceProvider.GetService<ISqlServerHelper>();
-
-            // Example usage
-            var myService = new MyService(sqlServerHelper);
-            myService.ExecuteSampleQueries();
-
-            // Keep the console window open
-            Console.ReadLine();
-        }
-    }
+    [Identity] public int Id { get; init; }
+    [Key, Column("sku")] public string Sku { get; init; } = "";
+    public string Name { get; init; } = "";
+    public decimal Price { get; init; }
+    public DateOnly ReleasedOn { get; init; }
+    [NoCrud] public string InternalNote { get; init; } = "";
 }
-
-
 ```
 
-## Example Usage
-```sh
-using Microsoft.Extensions.Configuration;
-using TA.DataAccess.SqlServer;
-using System.Collections.Generic;
-using System.Data;
+Without `[Table]`, the type name is used. Without `[Column]`, the property name is used. `[NoCrud]` properties are skipped. `[Identity]` is excluded from inserts. `[Key]` (or `[Identity]` as fallback) drives `UpdateModel` when `idColumn` is omitted.
 
-public class MyService
-{
-    private readonly ISqlServerHelper _sqlServerHelper;
+## Quick examples
 
-    public MyService(ISqlServerHelper sqlServerHelper)
-    {
-        _sqlServerHelper = sqlServerHelper;
-    }
+```csharp
+// parameterized interpolated query — safe
+await helper.ExecuteInterpolatedAsync($"UPDATE Products SET Price = {newPrice} WHERE Sku = {sku}");
 
-    public void ExecuteSampleQueries()
-    {
-            // ExecuteNonQuery with a single query
-            string createTableQuery = "CREATE TABLE TestTable (id int identity(1,1), PId INT PRIMARY KEY, Name NVARCHAR(50))";
-            _sqlServerHelper.ExecuteNonQuery(createTableQuery);
-            Console.WriteLine("Table created successfully.");
+// streaming read — no DataTable, low memory
+await foreach (var product in helper.SelectStreamAsync<Product>("SELECT * FROM catalog.Products"))
+    Process(product);
 
-            // ExecuteNonQuery with multiple queries
-            var queries = new List<string>
-            {
-                "INSERT INTO TestTable (PId, Name) VALUES (1, 'Test Name 1')",
-                "INSERT INTO TestTable (PId, Name) VALUES (2, 'Test Name 2')"
-            };
-            _sqlServerHelper.ExecuteNonQuery(queries);
-            Console.WriteLine("Multiple queries executed successfully.");
+// bulk insert
+await helper.BulkInsertAsync(products, cancellationToken: token);
 
-            // Select with a single query
-            string selectQuery = "SELECT * FROM TestTable";
-            var dataTable = _sqlServerHelper.Select(selectQuery);
-            Console.WriteLine("Select query executed successfully.");
-            foreach (DataRow row in dataTable.Rows)
-            {
-                Console.WriteLine($"PId: {row["PId"]}, Name: {row["Name"]}");
-            }
-
-            // Select<T> with a single query
-            var results = _sqlServerHelper.Select<TestModel>("SELECT * FROM TestTable");
-            Console.WriteLine("Select<T> query executed successfully.");
-            foreach (var result in results)
-            {
-                Console.WriteLine($"PId: {result.PId}, Name: {result.Name}");
-            }
-
-            // InsertModel
-            var newModel = new TestModel { PId = 3, Name = "Test Name 3" };
-            _sqlServerHelper.InsertModel(newModel, "TestTable");
-            Console.WriteLine("Model inserted successfully.");
-
-            // InsertModels
-            var newModels = new List<TestModel>
-            {
-                new TestModel { PId = 4, Name = "Test Name 4" },
-                new TestModel { PId = 5, Name = "Test Name 5" }
-            };
-            _sqlServerHelper.InsertModels(newModels, "TestTable");
-            Console.WriteLine("Models inserted successfully.");
-
-            // GetAllModels
-            var allModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
-            Console.WriteLine("GetAllModels executed successfully.");
-            foreach (var model in allModels)
-            {
-                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
-            }
-
-            // GetModelById
-            var modelById = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
-            Console.WriteLine("GetModelById executed successfully.");
-            Console.WriteLine($"PId: {modelById.PId}, Name: {modelById.Name}");
-
-            // UpdateModel
-            modelById.Name = "Updated Test Name 1";
-            _sqlServerHelper.UpdateModel(modelById, "TestTable", "id");
-            Console.WriteLine("Model updated successfully.");
-            var updatedModel = _sqlServerHelper.GetModelById<TestModel>("TestTable", "PId", 1);
-            Console.WriteLine($"PId: {updatedModel.PId}, Name: {updatedModel.Name}");
-
-            // DeleteModel
-            _sqlServerHelper.DeleteModel("TestTable", "PId",1);
-            Console.WriteLine("Model deleted successfully.");
-            var remainingModels = _sqlServerHelper.GetAllModels<TestModel>("TestTable");
-            Console.WriteLine("Remaining models after deletion:");
-            foreach (var model in remainingModels)
-            {
-                Console.WriteLine($"PId: {model.PId}, Name: {model.Name}");
-            }
-
-            // Clean up
-            _sqlServerHelper.ExecuteNonQuery("DROP TABLE TestTable");
-            Console.WriteLine("Table dropped successfully.");
-    }
-}
-
-
+// CRUD using attribute-resolved table + key
+await helper.InsertModelAsync(new Product { Sku = "X1", Name = "Widget", Price = 9.99m });
+var p = await helper.GetModelByIdAsync<Product>("catalog.Products", "sku", "X1");
+p!.Price = 12.50m;
+await helper.UpdateModelAsync(p);
 ```
-## Custom Attributes
-You can use the NoCrudAttribute to exclude properties from CRUD operations:
 
-```sh
-public class TestModel
-    {
-        [Identity]
-        public int id { get; set; }
-        public int PId { get; set; }
-        public string Name { get; set; }
-        [NoCrud]
-        public string FName { get; set; }
-    }
-```
+## API reference
+
+| Method | Sync | Async | Notes |
+| --- | --- | --- | --- |
+| `ExecuteNonQuery(string, params)` | ✓ | ✓ | INSERT/UPDATE/DELETE/DDL. Returns rows affected. |
+| `ExecuteNonQuery(IReadOnlyList<string>)` | ✓ | ✓ | Multiple statements in one transaction. |
+| `ExecuteInterpolated(FormattableString)` | ✓ | ✓ | Auto-parameterizes interpolation arguments. |
+| `Select(string, params)` | ✓ | ✓ | Returns `DataTable`. |
+| `Select<T>(string, params)` | ✓ | ✓ | Returns `List<T>`. |
+| `SelectStreamAsync<T>(string, params)` | — | ✓ | Returns `IAsyncEnumerable<T>`. |
+| `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`. |
+| `InsertModels<T>(list, table?)` | ✓ | ✓ | Transactional batch. |
+| `BulkInsertAsync<T>(list, table?)` | — | ✓ | `SqlBulkCopy`. Best for >100 rows. |
+| `GetAllModels<T>(table?)` | ✓ | ✓ | Full table read. |
+| `GetModelById<T>(table, idColumn, id)` | ✓ | ✓ | Returns `T?`. |
+| `UpdateModel<T>(model, table?, idColumn?)` | ✓ | ✓ | `idColumn` defaults to `[Key]`/`[Identity]`. |
+| `DeleteModel(table, idColumn, id)` | ✓ | ✓ | |
+
+All async methods accept a trailing `CancellationToken`.
+
+## Options
+
+`SqlServerHelperOptions`:
+
+| Property | Default | Purpose |
+| --- | --- | --- |
+| `CommandTimeoutSeconds` | 30 | Per-command timeout. |
+| `BulkCopyTimeoutSeconds` | 60 | Used by `BulkInsertAsync`. |
+| `BulkCopyBatchSize` | 1000 | Used by `BulkInsertAsync`. |
+| `LogParameters` | false | Whether to include parameter values in debug logs. |
 
 ## Contributing
-Contributions are welcome! Please fork the repository and submit a pull request.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
-This project is licensed under the MIT License.
+
+MIT — see [LICENSE](LICENSE).

@@ -4,3 +4,5 @@
 /src/TA.DataAccess.SqlServer/bin
 /src/SqlServerHelperTest/bin
 /src/SqlServerHelperTest/obj
+/src/TA.DataAccess.SqlServer.Tests/obj
+/src/TA.DataAccess.SqlServer.Tests/bin
