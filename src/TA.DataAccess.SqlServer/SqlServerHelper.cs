@@ -22,20 +22,57 @@ namespace TA.DataAccess.SqlServer
 
         public int ExecuteNonQuery(string query, SqlParameter[] parameters = null)
         {
-            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(query))
+                throw new ArgumentException("Query must not be null or empty.");
 
-            using (var connection = GetConnection())
+            try
             {
-                using (var command = new SqlCommand(query, connection))
+                using (var connection = GetConnection())
                 {
-                    if (parameters != null)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        command.Parameters.AddRange(parameters);
-                    }
+                        if (parameters != null)
+                        {
+                            command.Parameters.AddRange(parameters);
+                        }
 
-                    connection.Open();
-                    return command.ExecuteNonQuery();
+                        connection.Open();
+                        return command.ExecuteNonQuery();
+                    }
                 }
+            }
+            catch (SqlException ex)
+            {
+                // Log exception here
+                throw new Exception("An error occurred while executing the SQL command.", ex);
+            }
+        }
+
+        public async Task<int> ExecuteNonQueryAsync(string query, SqlParameter[] parameters = null)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                throw new ArgumentException("Query must not be null or empty.");
+
+            try
+            {
+                using (var connection = GetConnection())
+                {
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        if (parameters != null)
+                        {
+                            command.Parameters.AddRange(parameters);
+                        }
+
+                        await connection.OpenAsync();
+                        return await command.ExecuteNonQueryAsync();
+                    }
+                }
+            }
+            catch (SqlException ex)
+            {
+                // Log exception here
+                throw new Exception("An error occurred while executing the SQL command.", ex);
             }
         }
 
@@ -64,10 +101,47 @@ namespace TA.DataAccess.SqlServer
                             transaction.Commit();
                             return rowsAffected;
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            // Log the exception here
                             transaction.Rollback();
-                            throw;
+                            throw new Exception("An error occurred while executing the SQL commands.", ex);
+                        }
+                    }
+                }
+            }
+        }
+
+        public async Task<int> ExecuteNonQueryAsync(List<string> queries)
+        {
+            if (queries == null || queries.Count == 0)
+                throw new ArgumentException("Queries must not be null or empty.");
+
+            using (var connection = GetConnection())
+            {
+                await connection.OpenAsync();
+                using (var transaction = (SqlTransaction) await connection.BeginTransactionAsync())
+                {
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.Transaction = transaction;
+                        try
+                        {
+                            int rowsAffected = 0;
+                            foreach (var query in queries)
+                            {
+                                command.CommandText = query;
+                                command.Parameters.Clear();
+                                rowsAffected += await command.ExecuteNonQueryAsync();
+                            }
+                            await transaction.CommitAsync();
+                            return rowsAffected;
+                        }
+                        catch (Exception ex)
+                        {
+                            // Log the exception here
+                            await transaction.RollbackAsync();
+                            throw new Exception("An error occurred while executing the SQL commands.", ex);
                         }
                     }
                 }
@@ -76,24 +150,66 @@ namespace TA.DataAccess.SqlServer
 
         public DataTable Select(string query, SqlParameter[] parameters = null)
         {
-            if (string.IsNullOrWhiteSpace(query)) throw new ArgumentException("Query must not be null or empty.");
+            if (string.IsNullOrWhiteSpace(query))
+                throw new ArgumentException("Query must not be null or empty.");
 
-            using (var connection = GetConnection())
+            try
             {
-                using (var command = new SqlCommand(query, connection))
+                using (var connection = GetConnection())
                 {
-                    if (parameters != null)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        command.Parameters.AddRange(parameters);
-                    }
+                        if (parameters != null)
+                        {
+                            command.Parameters.AddRange(parameters);
+                        }
 
-                    using (var adapter = new SqlDataAdapter(command))
-                    {
-                        var dataTable = new DataTable();
-                        adapter.Fill(dataTable);
-                        return dataTable;
+                        using (var adapter = new SqlDataAdapter(command))
+                        {
+                            var dataTable = new DataTable();
+                            adapter.Fill(dataTable);
+                            return dataTable;
+                        }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                // Log the exception here
+                throw new Exception("An error occurred while executing the SQL query.", ex);
+            }
+        }
+
+        public async Task<DataTable> SelectAsync(string query, SqlParameter[] parameters = null)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                throw new ArgumentException("Query must not be null or empty.");
+
+            try
+            {
+                using (var connection = GetConnection())
+                {
+                    await connection.OpenAsync();
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        if (parameters != null)
+                        {
+                            command.Parameters.AddRange(parameters);
+                        }
+
+                        using (var adapter = new SqlDataAdapter(command))
+                        {
+                            var dataTable = new DataTable();
+                            await Task.Run(() => adapter.Fill(dataTable));
+                            return dataTable;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the exception here
+                throw new Exception("An error occurred while executing the SQL query.", ex);
             }
         }
 
@@ -266,8 +382,12 @@ namespace TA.DataAccess.SqlServer
     public interface ISqlServerHelper
     {
         int ExecuteNonQuery(string query, SqlParameter[] parameters = null);
+        Task<int> ExecuteNonQueryAsync(string query, SqlParameter[] parameters = null);
         int ExecuteNonQuery(List<string> queries);
+        Task<int> ExecuteNonQueryAsync(List<string> queries);
         DataTable Select(string query, SqlParameter[] parameters = null);
+        Task<DataTable> SelectAsync(string query, SqlParameter[] parameters = null);
+
         List<T> Select<T>(string query, SqlParameter[] parameters = null) where T : new();
         int InsertModel<T>(T model, string tableName);
         int InsertModels<T>(List<T> models, string tableName);
