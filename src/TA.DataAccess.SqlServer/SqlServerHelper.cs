@@ -234,7 +234,7 @@ namespace TA.DataAccess.SqlServer
                 {
                     command.Parameters.Clear();
                     foreach (var column in metadata.InsertableColumns)
-                        command.Parameters.AddWithValue($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!)));
+                        command.Parameters.Add(new SqlParameter($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!))));
                     rowsAffected += command.ExecuteNonQuery();
                 }
                 transaction.Commit();
@@ -265,7 +265,7 @@ namespace TA.DataAccess.SqlServer
                 {
                     command.Parameters.Clear();
                     foreach (var column in metadata.InsertableColumns)
-                        command.Parameters.AddWithValue($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!)));
+                        command.Parameters.Add(new SqlParameter($"@{column.PropertyName}", ValueCoercion.ToDbValue(column.Getter(model!))));
                     rowsAffected += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -396,10 +396,7 @@ namespace TA.DataAccess.SqlServer
             if (model is null) throw new ArgumentNullException(nameof(model));
             var metadata = ModelMetadataCache.Get<T>();
 
-            var keyBinding = idColumn is null
-                ? metadata.KeyColumn ?? throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no [Key] or [Identity] property; pass idColumn explicitly.")
-                : metadata.Columns.FirstOrDefault(c => c.PropertyName == idColumn)
-                  ?? throw new ArgumentException($"Property '{idColumn}' not found on type '{metadata.ModelType.FullName}'.", nameof(idColumn));
+            var keyBinding = metadata.GetKeyColumn(idColumn);
 
             var updatable = metadata.Columns
                 .Where(c => !c.IsIdentity && c.PropertyName != keyBinding.PropertyName)

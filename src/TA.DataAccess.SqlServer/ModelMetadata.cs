@@ -25,6 +25,22 @@ namespace TA.DataAccess.SqlServer
         public required ColumnBinding[] Columns { get; init; }
         public required ColumnBinding[] InsertableColumns { get; init; }
         public required ColumnBinding? KeyColumn { get; init; }
+
+        /// <summary>
+        /// Resolves the column used as the key for an update/lookup. When <paramref name="idColumn"/>
+        /// is null, falls back to the [Key]/[Identity] column. Otherwise matches a binding by either
+        /// its property name or its mapped column name, so callers can pass whichever they have.
+        /// </summary>
+        public ColumnBinding GetKeyColumn(string? idColumn)
+        {
+            if (idColumn is null)
+                return KeyColumn ?? throw new InvalidOperationException(
+                    $"Type '{ModelType.FullName}' has no [Key] or [Identity] property; pass idColumn explicitly.");
+
+            return Columns.FirstOrDefault(c => c.PropertyName == idColumn || c.ColumnName == idColumn)
+                ?? throw new ArgumentException(
+                    $"No property or column named '{idColumn}' on type '{ModelType.FullName}'.", nameof(idColumn));
+        }
     }
 
     [RequiresUnreferencedCode("Reads public instance properties of T via reflection. Preserve T members when trimming.")]

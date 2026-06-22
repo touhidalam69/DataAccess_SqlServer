@@ -63,4 +63,32 @@ public class ModelMetadataTests
         nameBinding.Setter(customer, "Acme");
         Assert.Equal("Acme", nameBinding.Getter(customer));
     }
+
+    [Fact]
+    public void GetKeyColumn_NullIdColumn_FallsBackToKey()
+    {
+        var metadata = ModelMetadataCache.Get<Customer>();
+        Assert.Equal(nameof(Customer.Code), metadata.GetKeyColumn(null).PropertyName);
+    }
+
+    [Fact]
+    public void GetKeyColumn_MatchesByPropertyName()
+    {
+        var metadata = ModelMetadataCache.Get<Customer>();
+        Assert.Equal("customer_code", metadata.GetKeyColumn(nameof(Customer.Code)).ColumnName);
+    }
+
+    [Fact]
+    public void GetKeyColumn_MatchesByColumnName()
+    {
+        var metadata = ModelMetadataCache.Get<Customer>();
+        Assert.Equal(nameof(Customer.Code), metadata.GetKeyColumn("customer_code").PropertyName);
+    }
+
+    [Fact]
+    public void GetKeyColumn_UnknownName_Throws()
+    {
+        var metadata = ModelMetadataCache.Get<Customer>();
+        Assert.Throws<ArgumentException>(() => metadata.GetKeyColumn("does_not_exist"));
+    }
 }

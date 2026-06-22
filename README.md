@@ -55,18 +55,18 @@ services.AddSingleton<ISqlServerHelper>(sp =>
 
 ```csharp
 [Table("Products", Schema = "catalog")]
-public record class Product
+public class Product
 {
-    [Identity] public int Id { get; init; }
-    [Key, Column("sku")] public string Sku { get; init; } = "";
-    public string Name { get; init; } = "";
-    public decimal Price { get; init; }
-    public DateOnly ReleasedOn { get; init; }
-    [NoCrud] public string InternalNote { get; init; } = "";
+    [Identity] public int Id { get; set; }
+    [Key, Column("sku")] public string Sku { get; set; } = "";
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+    public DateOnly ReleasedOn { get; set; }
+    [NoCrud] public string InternalNote { get; set; } = "";
 }
 ```
 
-Without `[Table]`, the type name is used. Without `[Column]`, the property name is used. `[NoCrud]` properties are skipped. `[Identity]` is excluded from inserts. `[Key]` (or `[Identity]` as fallback) drives `UpdateModel` when `idColumn` is omitted.
+Without `[Table]`, the type name is used. Without `[Column]`, the property name is used. `[NoCrud]` properties are skipped. `[Identity]` is excluded from inserts. `[Key]` (or `[Identity]` as fallback) drives `UpdateModel` when `idColumn` is omitted. When `idColumn` is supplied to `UpdateModel`, it matches either the property name or the mapped column name.
 
 ## Quick examples
 
