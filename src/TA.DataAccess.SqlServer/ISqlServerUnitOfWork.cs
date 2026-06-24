@@ -4,7 +4,12 @@ using Microsoft.Data.SqlClient;
 
 namespace TA.DataAccess.SqlServer
 {
-    public interface ISqlServerHelper
+    /// <summary>
+    /// A transactional scope over a single connection. All operations enlist in the same
+    /// transaction; call <see cref="Commit"/>/<see cref="CommitAsync"/> to persist, otherwise
+    /// disposal rolls back. Obtained from <see cref="ISqlServerHelper.BeginTransaction"/>.
+    /// </summary>
+    public interface ISqlServerUnitOfWork : IDisposable, IAsyncDisposable
     {
         int ExecuteNonQuery(string query, SqlParameter[]? parameters = null);
         Task<int> ExecuteNonQueryAsync(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default);
@@ -119,7 +124,9 @@ namespace TA.DataAccess.SqlServer
         T? ExecuteProcedureScalar<T>(string procedureName, SqlParameter[]? parameters = null);
         Task<T?> ExecuteProcedureScalarAsync<T>(string procedureName, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default);
 
-        ISqlServerUnitOfWork BeginTransaction(IsolationLevel isolationLevel = IsolationLevel.ReadCommitted);
-        Task<ISqlServerUnitOfWork> BeginTransactionAsync(IsolationLevel isolationLevel = IsolationLevel.ReadCommitted, CancellationToken cancellationToken = default);
+        void Commit();
+        Task CommitAsync(CancellationToken cancellationToken = default);
+        void Rollback();
+        Task RollbackAsync(CancellationToken cancellationToken = default);
     }
 }

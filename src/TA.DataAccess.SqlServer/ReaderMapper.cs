@@ -56,7 +56,7 @@ namespace TA.DataAccess.SqlServer
                 var value = reader.GetValue(ordinal);
                 try
                 {
-                    var converted = ValueCoercion.Coerce(value, column.UnderlyingType);
+                    var converted = column.Convert(value);
                     column.Setter(model!, converted);
                 }
                 catch (Exception ex)

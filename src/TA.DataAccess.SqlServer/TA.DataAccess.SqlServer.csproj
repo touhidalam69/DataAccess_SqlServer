@@ -3,7 +3,7 @@
 		<TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>TA.DataAccess.SqlServer</PackageId>
-		<Version>2.0.0</Version>
+		<Version>2.1.0</Version>
 		<Authors>Touhid Alam</Authors>
 		<Company>Touhid Alam</Company>
 		<Product>TA.DataAccess.SqlServer</Product>
@@ -16,7 +16,7 @@
 		<Title>DataAccess.SqlServer</Title>
 		<Copyright>MIT</Copyright>
 		<PackageProjectUrl>https://touhidalam.com/simplifying-sql-server-database-operations-for-net-developers/</PackageProjectUrl>
-		<PackageReleaseNotes>Targets net8.0/net9.0/net10.0. Hardened identifier handling against SQL injection, added async CRUD methods + cancellation tokens, IAsyncEnumerable streaming, SqlBulkCopy, FormattableString parameterized API, ILogger integration, [Column]/[Table]/[Key] attributes, expanded type coercion (DateOnly/TimeOnly/Guid/enum), Source Link + symbols. BREAKING: dropped netcoreapp3.1/net5.0; GetModelById returns T?; dynamic id -&gt; object.</PackageReleaseNotes>
+		<PackageReleaseNotes>2.1.0 (additive): transactions/unit-of-work (BeginTransaction/BeginTransactionAsync -&gt; ISqlServerUnitOfWork); stored procedures (ExecuteProcedure/QueryProcedure/ExecuteProcedureScalar); ExecuteScalar&lt;T&gt;; InsertModel now writes back the generated [Identity] value; Count/Exists; attribute-resolved GetModelByKey/DeleteByKey; SelectPaged (OFFSET/FETCH); batch ExecuteInterpolated. Performance: per-column compiled coercion delegates, await using async disposal, explicit string/Guid/bool parameter typing, streamed bulk insert (no DataTable) + IEnumerable overload. Note: ISqlServerHelper gained members (source-breaking for custom implementers only).</PackageReleaseNotes>
 		<PackageIcon>TA.DataAccess.SqlServer.png</PackageIcon>
 		<PackAsTool>False</PackAsTool>
 		<IsTrimmable>true</IsTrimmable>

@@ -13,6 +13,7 @@ namespace TA.DataAccess.SqlServer
         public required Type UnderlyingType { get; init; }
         public required Func<object, object?> Getter { get; init; }
         public required Action<object, object?> Setter { get; init; }
+        public required Func<object, object?> Convert { get; init; }
         public bool IsIdentity { get; init; }
         public bool IsKey { get; init; }
     }
@@ -25,6 +26,7 @@ namespace TA.DataAccess.SqlServer
         public required ColumnBinding[] Columns { get; init; }
         public required ColumnBinding[] InsertableColumns { get; init; }
         public required ColumnBinding? KeyColumn { get; init; }
+        public required ColumnBinding? IdentityColumn { get; init; }
 
         /// <summary>
         /// Resolves the column used as the key for an update/lookup. When <paramref name="idColumn"/>
@@ -62,8 +64,8 @@ namespace TA.DataAccess.SqlServer
 
             var columns = properties.Select(BuildBinding).ToArray();
             var insertable = columns.Where(c => !c.IsIdentity).ToArray();
-            var key = columns.FirstOrDefault(c => c.IsKey)
-                      ?? columns.FirstOrDefault(c => c.IsIdentity);
+            var identity = columns.FirstOrDefault(c => c.IsIdentity);
+            var key = columns.FirstOrDefault(c => c.IsKey) ?? identity;
 
             return new ModelMetadata
             {
@@ -73,6 +75,7 @@ namespace TA.DataAccess.SqlServer
                 Columns = columns,
                 InsertableColumns = insertable,
                 KeyColumn = key,
+                IdentityColumn = identity,
             };
         }
 
@@ -89,6 +92,7 @@ namespace TA.DataAccess.SqlServer
                 UnderlyingType = underlying,
                 Getter = CompileGetter(property),
                 Setter = CompileSetter(property),
+                Convert = ValueCoercion.BuildConverter(underlying),
                 IsIdentity = property.GetCustomAttribute<IdentityAttribute>() != null,
                 IsKey = property.GetCustomAttribute<KeyAttribute>() != null,
             };
