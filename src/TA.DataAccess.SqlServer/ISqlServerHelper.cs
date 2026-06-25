@@ -35,6 +35,18 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
         IAsyncEnumerable<T> SelectStreamAsync<T>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T : new();
 
+        DataTable SelectInterpolated(FormattableString query);
+        Task<DataTable> SelectInterpolatedAsync(FormattableString query, CancellationToken cancellationToken = default);
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        List<T> SelectInterpolated<T>(FormattableString query) where T : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        Task<List<T>> SelectInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        IAsyncEnumerable<T> SelectStreamInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new();
+
         [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
         List<T> SelectPaged<T>(string query, int page, int pageSize, SqlParameter[]? parameters = null) where T : new();
 

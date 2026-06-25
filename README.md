@@ -10,7 +10,7 @@ Targets: **net8.0**, **net9.0**, **net10.0**.
 - Transactions / unit-of-work — run many operations atomically (`BeginTransaction`)
 - Stored procedures with input + output parameters (`ExecuteProcedure`, `QueryProcedure`)
 - Identifier hardening (`[bracketed]` + regex validation) against injection
-- `FormattableString` parameterized API, single or batch (`ExecuteInterpolated`)
+- `FormattableString` parameterized API for writes and reads (`ExecuteInterpolated`, `SelectInterpolated`)
 - Scalar queries (`ExecuteScalar<T>`), `Count<T>`, `Exists<T>`
 - `InsertModel` writes the generated `[Identity]` value back onto the model
 - Attribute-resolved by-key CRUD (`GetModelByKey<T>`, `DeleteByKey<T>`)
@@ -87,6 +87,10 @@ await helper.ExecuteInterpolatedAsync(new FormattableString[]
     $"INSERT INTO Audit (Message) VALUES ({msg})",
 });
 
+// parameterized read — safe, no manual SqlParameter[]
+var pricey = await helper.SelectInterpolatedAsync<Product>(
+    $"SELECT * FROM catalog.Products WHERE Price > {minPrice}");
+
 // streaming read — no DataTable, low memory
 await foreach (var product in helper.SelectStreamAsync<Product>("SELECT * FROM catalog.Products"))
     Process(product);
@@ -146,8 +150,10 @@ catch
 | `ExecuteScalar<T>(string, params)` | ✓ | ✓ | Single value, coerced to `T`. Also `ExecuteScalarInterpolated<T>`. |
 | `Select(string, params)` | ✓ | ✓ | Returns `DataTable`. |
 | `Select<T>(string, params)` | ✓ | ✓ | Returns `List<T>`. |
+| `SelectInterpolated<T>(FormattableString)` | ✓ | ✓ | Parameterized read → `List<T>`. Also non-generic `DataTable` overload. |
 | `SelectPaged<T>(query, page, pageSize, params)` | ✓ | ✓ | `OFFSET/FETCH`. Query must include `ORDER BY`. |
 | `SelectStreamAsync<T>(string, params)` | — | ✓ | Returns `IAsyncEnumerable<T>`. |
+| `SelectStreamInterpolatedAsync<T>(FormattableString)` | — | ✓ | Parameterized streaming read. |
 | `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`, writes the generated value back onto the model. |
 | `InsertModels<T>(list, table?)` | ✓ | ✓ | Transactional batch (no identity write-back). |
 | `BulkInsertAsync<T>(list \| IEnumerable, table?)` | — | ✓ | Streamed `SqlBulkCopy`. Best for >100 rows. |

@@ -33,6 +33,22 @@ public class ParameterizeInterpolationTests
     }
 
     [Fact]
+    public void SelectQuery_ParameterizesFilterWithTypedParameter()
+    {
+        string name = "Widget";
+        FormattableString query = $"SELECT * FROM catalog.Products WHERE Name = {name}";
+
+        var (sql, parameters) = SqlServerHelper.ParameterizeInterpolation(query);
+
+        Assert.Equal("SELECT * FROM catalog.Products WHERE Name = @p0", sql);
+        Assert.Single(parameters);
+        Assert.Equal("@p0", parameters[0].ParameterName);
+        Assert.Equal(name, parameters[0].Value);
+        // string parameters are given a plan-cache-friendly NVarChar type by ParameterFactory.
+        Assert.Equal(System.Data.SqlDbType.NVarChar, parameters[0].SqlDbType);
+    }
+
+    [Fact]
     public void IndependentCalls_EachRenumberFromP0()
     {
         FormattableString first = $"UPDATE A SET V = {1}";

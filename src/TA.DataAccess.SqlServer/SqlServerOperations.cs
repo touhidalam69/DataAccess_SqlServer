@@ -387,6 +387,39 @@ namespace TA.DataAccess.SqlServer
         public IAsyncEnumerable<T> SelectStreamAsync<T>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T : new()
             => RunStream<T>(query, parameters, cancellationToken);
 
+        public DataTable SelectInterpolated(FormattableString query)
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return RunDataTable(sql, parameters, CommandType.Text);
+        }
+
+        public Task<DataTable> SelectInterpolatedAsync(FormattableString query, CancellationToken cancellationToken = default)
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return RunDataTableAsync(sql, parameters, CommandType.Text, cancellationToken);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public List<T> SelectInterpolated<T>(FormattableString query) where T : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return RunList<T>(sql, parameters, CommandType.Text);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<List<T>> SelectInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return RunListAsync<T>(sql, parameters, CommandType.Text, cancellationToken);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public IAsyncEnumerable<T> SelectStreamInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query);
+            return RunStream<T>(sql, parameters, cancellationToken);
+        }
+
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public List<T> SelectPaged<T>(string query, int page, int pageSize, SqlParameter[]? parameters = null) where T : new()
         {
