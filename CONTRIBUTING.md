@@ -64,8 +64,9 @@ Pre-release tags use `-preview.N` or `-rc.N`.
 1. Bump `<Version>` in `src/TA.DataAccess.SqlServer/TA.DataAccess.SqlServer.csproj` per SemVer rules above.
 2. Update `<PackageReleaseNotes>`.
 3. Run the tests, including the integration tests against a SQL Server.
-4. Commit, then tag: `git tag v2.0.0 && git push --tags`.
-5. CI workflow publishes to NuGet on tag push.
+4. Commit, then tag: `git tag v2.0.0 && git push origin main --tags`.
+5. CI builds, tests and packs the tagged commit, checks that the tag matches `<Version>`, and publishes
+   that package to NuGet (repository secret `NUGET_API_KEY`).
 
 To pack locally, commit first (Source Link records the current commit), then pack every target in one go:
 
