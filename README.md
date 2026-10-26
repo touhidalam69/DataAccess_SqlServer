@@ -8,13 +8,14 @@ Targets: **net8.0**, **net9.0**, **net10.0**.
 
 - Sync + async CRUD with `CancellationToken` on every async path
 - Transactions / unit-of-work — run many operations atomically (`BeginTransaction`)
+- One interface, `ISqlServerOperations`, for the helper and the unit of work, so the same repository code runs inside or outside a transaction
 - Stored procedures with input + output parameters (`ExecuteProcedure`, `QueryProcedure`)
 - Identifier hardening (`[bracketed]` + regex validation) against injection
 - `FormattableString` parameterized API for writes and reads (`ExecuteInterpolated`, `SelectInterpolated`)
 - Scalar queries (`ExecuteScalar<T>`), `Count<T>`, `Exists<T>`
-- `InsertModel` writes the generated `[Identity]` and `[RowVersion]` values back onto the model, including on tables with triggers
+- `InsertModel` writes the generated `[Identity]`, `[RowVersion]` and `[Computed]` values back onto the model, including on tables with triggers
 - Attribute-resolved by-key CRUD (`GetModelByKey<T>`, `DeleteByKey<T>`), with composite keys
-- Optimistic concurrency with `[RowVersion]` (`UpdateModel` throws `DBConcurrencyException` on a stale version)
+- Optimistic concurrency with `[RowVersion]` (`UpdateModel` and `DeleteModel` throw `DBConcurrencyException` on a stale version)
 - `[Computed]` (database-filled) and `[InsertOnly]` columns
 - Multiple result sets in one round trip (`SelectMultiple<T1, T2>` / `<T1, T2, T3>`)
 - Paging via `OFFSET/FETCH` (`SelectPaged<T>`)
@@ -83,7 +84,7 @@ Without `[Table]`, the type name is used. Without `[Column]`, the property name 
 | *(none)* | ✓ | ✓ | ✓ | Ordinary columns |
 | `[Identity]` | ✓ | — | — | `IDENTITY` key; written back after insert |
 | `[Key]` | ✓ | ✓ | — (used in `WHERE`) | Key column; several make a composite key, ordered by `[Key(Order = n)]` |
-| `[Computed]` | ✓ | — | — | Computed columns, and columns left to a database default |
+| `[Computed]` | ✓ | — | — | Computed columns, and columns left to a database default or a trigger; read back after insert |
 | `[RowVersion]` | ✓ | — | — (checked in `WHERE`) | `rowversion` column (`byte[]`); written back after insert and update |
 | `[InsertOnly]` | ✓ | ✓ | — | `CreatedAt`, `CreatedBy` |
 | `[NoCrud]` | — | — | — | Properties that are not columns |
@@ -102,6 +103,12 @@ public class Plan
     [RowVersion] public byte[]? RowVer { get; set; }
 }
 ```
+
+After `InsertModel`, the model holds what the database stored: `PlanId`, `PlannedQty`, `CreatedAt`
+and `RowVer` are read back from the new row in the same round trip. Because the stored row is read,
+values an insert trigger set (and the version that change produced) come back too. `[Computed]`
+values are read back when the new row can be found: by its `[Identity]`, or by `[Key]` values the
+model supplies. `InsertModels` and `BulkInsertAsync` write nothing back.
 
 ### Composite keys
 
@@ -141,6 +148,14 @@ catch (DBConcurrencyException)
 {
     // someone else changed or deleted the row: reload and retry, or tell the user
 }
+```
+
+`DeleteModel(model)` deletes by the model's key and, with a `[RowVersion]`, only if the version still
+matches; otherwise it throws `DBConcurrencyException` and deletes nothing. `DeleteByKey<T>(id)` takes
+key values only, so it deletes without a version check.
+
+```csharp
+helper.DeleteModel(plan);   // fails if someone changed the plan since it was loaded
 ```
 
 ## Quick examples
@@ -228,7 +243,7 @@ catch
 | `SelectStreamAsync<T>(string, params)` | — | ✓ | Returns `IAsyncEnumerable<T>`. |
 | `SelectStreamInterpolatedAsync<T>(FormattableString)` | — | ✓ | Parameterized streaming read. |
 | `SelectMultiple<T1, T2[, T3]>(string, params)` | ✓ | ✓ | 2 or 3 result sets in one round trip. Also `SelectMultipleInterpolated`. Throws if fewer sets come back. |
-| `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`/`[Computed]`/`[RowVersion]`, writes generated identity and rowversion back onto the model. |
+| `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`/`[Computed]`/`[RowVersion]` and writes their stored values back onto the model. |
 | `InsertModels<T>(list, table?)` | ✓ | ✓ | Transactional batch (no identity write-back). |
 | `BulkInsertAsync<T>(list \| IEnumerable, table?)` | — | ✓ | Streamed `SqlBulkCopy`. Best for >100 rows. |
 | `GetAllModels<T>(table?)` | ✓ | ✓ | Full table read. |
@@ -238,6 +253,7 @@ catch
 | `Exists<T>(id)` | ✓ | ✓ | Existence check by `[Key]`/`[Identity]`. Composite key: `object[]`. |
 | `UpdateModel<T>(model, table?, idColumn?)` | ✓ | ✓ | `idColumn` defaults to all `[Key]` columns (or `[Identity]`). Checks `[RowVersion]`; throws `DBConcurrencyException` on conflict. |
 | `DeleteModel(table, idColumn, id)` | ✓ | ✓ | |
+| `DeleteModel<T>(model, table?)` | ✓ | ✓ | Deletes by every key column of the model. Checks `[RowVersion]`; throws `DBConcurrencyException` on conflict. |
 | `DeleteByKey<T>(id)` | ✓ | ✓ | Table + key resolved from attributes. Composite key: `object[]`. |
 | `ExecuteProcedure(name, params)` | ✓ | ✓ | Rows affected; output params readable after. |
 | `QueryProcedure<T>(name, params)` | ✓ | ✓ | Maps result set to `List<T>`. Also `DataTable` overload. |
@@ -262,6 +278,17 @@ await uow.CommitAsync();
 Stored procedures can run inside the unit of work, including procedures that open their own
 transaction with `SET XACT_ABORT ON`. If one fails, SQL Server rolls back the whole transaction, the
 original `SqlException` reaches the caller, and disposing the unit of work is still safe.
+
+`ISqlServerHelper` and `ISqlServerUnitOfWork` both extend `ISqlServerOperations`, which holds every
+data operation. Write repositories against it, and pass the unit of work while a transaction is open
+or the helper otherwise:
+
+```csharp
+public sealed class PlanRepository(ISqlServerOperations db)
+{
+    public Task SaveAsync(Plan plan, CancellationToken ct) => db.UpdateModelAsync(plan, cancellationToken: ct);
+}
+```
 
 ## Options
 

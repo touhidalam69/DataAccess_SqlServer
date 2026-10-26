@@ -8,7 +8,7 @@ public class SqlBuilderTests
     public void Insert_WithIdentity_IncludesOutputClause()
     {
         var metadata = ModelMetadataCache.Get<ProductRow>();
-        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, includeIdentityOutput: true);
+        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, writeBack: true);
 
         Assert.Contains("INSERT INTO [catalog].[Products]", sql);
         // OUTPUT goes INTO a table variable: a bare OUTPUT is rejected on tables with triggers (error 334).
@@ -23,7 +23,7 @@ public class SqlBuilderTests
     public void Insert_WithoutOutputFlag_OmitsOutput()
     {
         var metadata = ModelMetadataCache.Get<ProductRow>();
-        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, includeIdentityOutput: false);
+        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, writeBack: false);
         Assert.DoesNotContain("OUTPUT", sql);
     }
 
@@ -31,7 +31,7 @@ public class SqlBuilderTests
     public void Insert_NoIdentity_OmitsOutputEvenWhenRequested()
     {
         var metadata = ModelMetadataCache.Get<KeylessRow>();
-        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, includeIdentityOutput: true);
+        var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, writeBack: true);
         Assert.DoesNotContain("OUTPUT", sql);
     }
 

@@ -45,3 +45,23 @@ internal sealed class VersionedRow
     [RowVersion]
     public byte[]? RowVer { get; set; }
 }
+
+// Key supplied by the caller (no [Identity]) plus a database default.
+[Table("Settings", Schema = "app")]
+internal sealed class DefaultedRow
+{
+    [Key]
+    public string Code { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+    [Computed]
+    public DateTime CreatedAt { get; set; }
+}
+
+// A database-filled column, but no [Identity] or [Key] to find the new row by.
+[Table("Log", Schema = "dbo")]
+internal sealed class KeylessComputedRow
+{
+    public string Message { get; set; } = string.Empty;
+    [Computed]
+    public DateTime At { get; set; }
+}

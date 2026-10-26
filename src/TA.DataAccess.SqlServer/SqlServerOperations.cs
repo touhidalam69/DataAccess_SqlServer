@@ -14,7 +14,7 @@ namespace TA.DataAccess.SqlServer
     /// both the connection-per-call <see cref="SqlServerHelper"/> and the shared-connection
     /// <see cref="SqlServerUnitOfWork"/>.
     /// </summary>
-    public abstract class SqlServerOperations
+    public abstract class SqlServerOperations : ISqlServerOperations
     {
         private protected readonly SqlServerHelperOptions _options;
         private protected readonly ILogger _logger;
@@ -246,22 +246,37 @@ namespace TA.DataAccess.SqlServer
 
         /// <summary>Values of the first row of the first result set, or null when there is no row.</summary>
         private object[]? RunFirstRow(string sql, SqlParameter[]? parameters)
-            => RunReader(sql, parameters, reader =>
-            {
-                if (!reader.Read()) return null;
-                var values = new object[reader.FieldCount];
-                reader.GetValues(values);
-                return values;
-            });
+            => RunReader(sql, parameters, reader => reader.Read() ? RowValues(reader) : null);
 
         private Task<object[]?> RunFirstRowAsync(string sql, SqlParameter[]? parameters, CancellationToken cancellationToken)
             => RunReaderAsync<object[]?>(sql, parameters, async (reader, ct) =>
+                await reader.ReadAsync(ct).ConfigureAwait(false) ? RowValues(reader) : null, cancellationToken);
+
+        /// <summary>Values of the first row of every result set, in order (null for an empty one).</summary>
+        private List<object[]?> RunFirstRows(string sql, SqlParameter[]? parameters)
+            => RunReader(sql, parameters, reader =>
             {
-                if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
-                var values = new object[reader.FieldCount];
-                reader.GetValues(values);
-                return values;
+                var rows = new List<object[]?>(2);
+                do rows.Add(reader.Read() ? RowValues(reader) : null);
+                while (reader.NextResult());
+                return rows;
+            });
+
+        private Task<List<object[]?>> RunFirstRowsAsync(string sql, SqlParameter[]? parameters, CancellationToken cancellationToken)
+            => RunReaderAsync(sql, parameters, async (reader, ct) =>
+            {
+                var rows = new List<object[]?>(2);
+                do rows.Add(await reader.ReadAsync(ct).ConfigureAwait(false) ? RowValues(reader) : null);
+                while (await reader.NextResultAsync(ct).ConfigureAwait(false));
+                return rows;
             }, cancellationToken);
+
+        private static object[] RowValues(SqlDataReader reader)
+        {
+            var values = new object[reader.FieldCount];
+            reader.GetValues(values);
+            return values;
+        }
 
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         private static List<TModel> ReadSet<TModel>(SqlDataReader reader, int index) where TModel : new()
@@ -575,13 +590,13 @@ namespace TA.DataAccess.SqlServer
         public int InsertModel<T>(T model, string? tableName = null)
         {
             var metadata = ModelMetadataCache.Get<T>();
-            var writeBack = HasGeneratedOutput(metadata);
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: writeBack);
+            var writeBack = HasWriteBack(metadata);
+            var sql = BuildInsertSql(metadata, tableName, writeBack: writeBack);
             var parameters = BuildInsertParameters(metadata, model!, _options.UseDateTime2);
             if (!writeBack)
                 return RunNonQuery(sql, parameters, CommandType.Text);
 
-            WriteBackGenerated(metadata, model!, RunFirstRow(sql, parameters));
+            WriteBack(metadata, model!, RunFirstRows(sql, parameters));
             return 1;
         }
 
@@ -589,13 +604,13 @@ namespace TA.DataAccess.SqlServer
         public async Task<int> InsertModelAsync<T>(T model, string? tableName = null, CancellationToken cancellationToken = default)
         {
             var metadata = ModelMetadataCache.Get<T>();
-            var writeBack = HasGeneratedOutput(metadata);
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: writeBack);
+            var writeBack = HasWriteBack(metadata);
+            var sql = BuildInsertSql(metadata, tableName, writeBack: writeBack);
             var parameters = BuildInsertParameters(metadata, model!, _options.UseDateTime2);
             if (!writeBack)
                 return await RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
 
-            WriteBackGenerated(metadata, model!, await RunFirstRowAsync(sql, parameters, cancellationToken).ConfigureAwait(false));
+            WriteBack(metadata, model!, await RunFirstRowsAsync(sql, parameters, cancellationToken).ConfigureAwait(false));
             return 1;
         }
 
@@ -604,7 +619,7 @@ namespace TA.DataAccess.SqlServer
         {
             EnsureModels(models);
             var metadata = ModelMetadataCache.Get<T>();
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: false);
+            var sql = BuildInsertSql(metadata, tableName, writeBack: false);
 
             var connection = GetOpenConnection(out var owns);
             var localTransaction = owns ? connection.BeginTransaction() : null;
@@ -639,7 +654,7 @@ namespace TA.DataAccess.SqlServer
         {
             EnsureModels(models);
             var metadata = ModelMetadataCache.Get<T>();
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: false);
+            var sql = BuildInsertSql(metadata, tableName, writeBack: false);
 
             var (connection, owns) = await GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             var localTransaction = owns ? (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null;
@@ -784,6 +799,26 @@ namespace TA.DataAccess.SqlServer
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
+        public int DeleteModel<T>(T model, string? tableName = null)
+        {
+            var (sql, parameters, rowVersion) = BuildDeleteModel(model, tableName, _options.UseDateTime2);
+            if (rowVersion is null)
+                return RunNonQuery(sql, parameters, CommandType.Text);
+
+            return CompleteVersionedDelete(model!, rowVersion, RunScalarRaw(sql, parameters, CommandType.Text));
+        }
+
+        [RequiresUnreferencedCode("Resolves T key via reflection.")]
+        public async Task<int> DeleteModelAsync<T>(T model, string? tableName = null, CancellationToken cancellationToken = default)
+        {
+            var (sql, parameters, rowVersion) = BuildDeleteModel(model, tableName, _options.UseDateTime2);
+            if (rowVersion is null)
+                return await RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
+
+            return CompleteVersionedDelete(model!, rowVersion, await RunScalarRawAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false));
+        }
+
+        [RequiresUnreferencedCode("Resolves T key via reflection.")]
         public int DeleteByKey<T>(object id)
         {
             var (sql, parameters) = BuildDeleteByKey<T>(id, _options.UseDateTime2);
@@ -866,6 +901,37 @@ namespace TA.DataAccess.SqlServer
         private static bool HasGeneratedOutput(ModelMetadata metadata)
             => metadata.IdentityColumn is not null || metadata.RowVersionColumn is not null;
 
+        private static bool HasWriteBack(ModelMetadata metadata)
+            => HasGeneratedOutput(metadata) || metadata.InsertReadBackColumns.Length > 0;
+
+        /// <summary>
+        /// Writes back the first row of each result set of the insert batch: the generated identity and
+        /// rowversion, then the re-read [Computed]/[RowVersion] values. The re-read row is the stored row,
+        /// so it also carries changes an insert trigger made, including the version that change produced.
+        /// </summary>
+        private static void WriteBack(ModelMetadata metadata, object model, List<object[]?> rows)
+        {
+            var index = 0;
+            if (HasGeneratedOutput(metadata))
+                WriteBackGenerated(metadata, model, rows[index++]);
+
+            if (metadata.InsertReadBackColumns.Length == 0 || index >= rows.Count || rows[index] is not { } row)
+                return;
+            for (int i = 0; i < row.Length; i++)
+                SetReadBack(metadata.InsertReadBackColumns[i], model, row[i]);
+        }
+
+        private static void SetReadBack(ColumnBinding binding, object model, object? value)
+        {
+            if (value is null || value is DBNull)
+            {
+                if (!binding.PropertyType.IsValueType || Nullable.GetUnderlyingType(binding.PropertyType) is not null)
+                    binding.Setter(model, null);
+                return;
+            }
+            binding.Setter(model, binding.Convert(value));
+        }
+
         /// <summary>Writes the generated identity and rowversion (in that order, when present) back onto the model.</summary>
         private static void WriteBackGenerated(ModelMetadata metadata, object model, object[]? row)
         {
@@ -886,11 +952,22 @@ namespace TA.DataAccess.SqlServer
         {
             var count = row is null || row[0] is DBNull ? 0L : Convert.ToInt64(row[0], CultureInfo.InvariantCulture);
             if (count == 0)
-                throw new DBConcurrencyException(
-                    $"No '{model.GetType().Name}' row matched the key and {rowVersion.PropertyName}: it was changed or deleted by someone else. Reload it and try again.");
+                throw ConcurrencyConflict(model, rowVersion);
             SetGenerated(rowVersion, model, row![1]);
             return (int)count;
         }
+
+        /// <summary>Reads the deleted-row count of a versioned delete; zero means a concurrency conflict.</summary>
+        private static int CompleteVersionedDelete(object model, ColumnBinding rowVersion, object? result)
+        {
+            var count = result is null || result is DBNull ? 0L : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+            if (count == 0)
+                throw ConcurrencyConflict(model, rowVersion);
+            return (int)count;
+        }
+
+        private static DBConcurrencyException ConcurrencyConflict(object model, ColumnBinding rowVersion)
+            => new($"No '{model.GetType().Name}' row matched the key and {rowVersion.PropertyName}: it was changed or deleted by someone else. Reload it and try again.");
 
         [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
         private static SqlParameter[] BuildInsertParameters(ModelMetadata metadata, object model, bool dateTime2 = false)
@@ -899,11 +976,12 @@ namespace TA.DataAccess.SqlServer
                 .ToArray();
 
         /// <summary>
-        /// Builds the INSERT. With <paramref name="includeIdentityOutput"/>, the generated [Identity] and
+        /// Builds the INSERT. With <paramref name="writeBack"/>, the generated [Identity] and
         /// [RowVersion] values are returned through <c>OUTPUT ... INTO</c> a table variable; a bare
-        /// <c>OUTPUT</c> clause is rejected by SQL Server on tables that have triggers.
+        /// <c>OUTPUT</c> clause is rejected by SQL Server on tables that have triggers. When the model has
+        /// <see cref="ModelMetadata.InsertReadBackColumns"/>, a last SELECT re-reads them from the new row.
         /// </summary>
-        internal static string BuildInsertSql(ModelMetadata metadata, string? tableName, bool includeIdentityOutput)
+        internal static string BuildInsertSql(ModelMetadata metadata, string? tableName, bool writeBack)
         {
             if (metadata.InsertableColumns.Length == 0)
                 throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no insertable columns.");
@@ -915,25 +993,58 @@ namespace TA.DataAccess.SqlServer
             var declarations = new List<string>(2);
             var outputs = new List<string>(2);
             var selected = new List<string>(2);
-            if (includeIdentityOutput && metadata.IdentityColumn is { } identity)
+            if (writeBack && metadata.IdentityColumn is { } identity)
             {
                 declarations.Add("[__identity] sql_variant");
                 outputs.Add($"INSERTED.{Identifier.Quote(identity.ColumnName)}");
                 selected.Add("[__identity]");
             }
-            if (includeIdentityOutput && metadata.RowVersionColumn is { } rowVersion)
+            if (writeBack && metadata.RowVersionColumn is { } rowVersion)
             {
                 declarations.Add("[__rowversion] binary(8)");
                 outputs.Add($"INSERTED.{Identifier.Quote(rowVersion.ColumnName)}");
                 selected.Add("[__rowversion]");
             }
 
+            var statements = new List<string>(4);
             if (outputs.Count == 0)
-                return $"INSERT INTO {table} ({columnNames}) VALUES ({parameterNames})";
+            {
+                statements.Add($"INSERT INTO {table} ({columnNames}) VALUES ({parameterNames})");
+            }
+            else
+            {
+                statements.Add($"DECLARE @__generated TABLE ({string.Join(", ", declarations)})");
+                statements.Add($"INSERT INTO {table} ({columnNames}) OUTPUT {string.Join(", ", outputs)} INTO @__generated VALUES ({parameterNames})");
+                statements.Add($"SELECT {string.Join(", ", selected)} FROM @__generated");
+            }
 
-            return $"DECLARE @__generated TABLE ({string.Join(", ", declarations)}); "
-                 + $"INSERT INTO {table} ({columnNames}) OUTPUT {string.Join(", ", outputs)} INTO @__generated VALUES ({parameterNames}); "
-                 + $"SELECT {string.Join(", ", selected)} FROM @__generated;";
+            if (writeBack && metadata.InsertReadBackColumns.Length > 0)
+            {
+                var readBack = string.Join(", ", metadata.InsertReadBackColumns.Select(c => Identifier.Quote(c.ColumnName)));
+                statements.Add($"SELECT {readBack} FROM {table} WHERE {NewRowPredicate(metadata)}");
+            }
+
+            return statements.Count == 1 ? statements[0] : string.Join("; ", statements) + ";";
+        }
+
+        /// <summary>Finds the row just inserted: by the identity captured in @__generated, otherwise by the [Key] parameters.</summary>
+        private static string NewRowPredicate(ModelMetadata metadata)
+        {
+            if (metadata.IdentityColumn is not { } identity)
+                return string.Join(" AND ", metadata.KeyColumns.Select(k => $"{Identifier.Quote(k.ColumnName)} = @{k.PropertyName}"));
+
+            // @__generated holds the identity as sql_variant; cast it back so the lookup can seek on the column.
+            var sqlType = Type.GetTypeCode(identity.UnderlyingType) switch
+            {
+                TypeCode.Int32 => "int",
+                TypeCode.Int64 => "bigint",
+                TypeCode.Int16 => "smallint",
+                TypeCode.Byte => "tinyint",
+                TypeCode.Decimal => "decimal(38, 0)",
+                _ => null,
+            };
+            var value = sqlType is null ? "[__identity]" : $"CAST([__identity] AS {sqlType})";
+            return $"{Identifier.Quote(identity.ColumnName)} = (SELECT {value} FROM @__generated)";
         }
 
         private static (string Sql, SqlParameter[] Parameters) BuildSelectById(string tableName, string idColumn, object id, bool dateTime2 = false)
@@ -999,6 +1110,46 @@ namespace TA.DataAccess.SqlServer
             if (id is null) throw new ArgumentNullException(nameof(id));
             var sql = $"DELETE FROM {Identifier.Quote(tableName)} WHERE {Identifier.Quote(idColumn)} = @Id";
             return (sql, new[] { ParameterFactory.Create("@Id", id, dateTime2) });
+        }
+
+        /// <summary>
+        /// Builds the DELETE for a model: every key column must match its value on the model. With a
+        /// [RowVersion] column the version must match too, and the batch returns the number of rows deleted.
+        /// </summary>
+        [RequiresUnreferencedCode("Resolves T key via reflection.")]
+        internal static (string Sql, SqlParameter[] Parameters, ColumnBinding? RowVersion) BuildDeleteModel<T>(T model, string? tableName, bool dateTime2 = false)
+        {
+            if (model is null) throw new ArgumentNullException(nameof(model));
+            var metadata = ModelMetadataCache.Get<T>();
+            var keys = metadata.GetKeyColumns(null);
+
+            var parameters = new List<SqlParameter>(keys.Length + 1);
+            foreach (var key in keys)
+            {
+                var value = key.Getter(model!)
+                    ?? throw new InvalidOperationException(
+                        $"Key property '{metadata.ModelType.FullName}.{key.PropertyName}' is null; load the row before deleting it.");
+                parameters.Add(ParameterFactory.Create($"@{key.PropertyName}", value, dateTime2));
+            }
+
+            var table = ResolveTableName(tableName, metadata);
+            var where = string.Join(" AND ", keys.Select(k => $"{Identifier.Quote(k.ColumnName)} = @{k.PropertyName}"));
+
+            var rowVersion = metadata.RowVersionColumn;
+            if (rowVersion is null)
+                return ($"DELETE FROM {table} WHERE {where}", parameters.ToArray(), null);
+
+            var currentVersion = rowVersion.Getter(model!)
+                ?? throw new InvalidOperationException(
+                    $"[RowVersion] property '{metadata.ModelType.FullName}.{rowVersion.PropertyName}' is null; load the row (or carry its version from the client) before deleting it.");
+            parameters.Add(ParameterFactory.Create($"@{rowVersion.PropertyName}", currentVersion));
+
+            var versionColumn = Identifier.Quote(rowVersion.ColumnName);
+            var sql = "DECLARE @__deleted TABLE ([__rowversion] binary(8)); "
+                    + $"DELETE FROM {table} OUTPUT DELETED.{versionColumn} INTO @__deleted "
+                    + $"WHERE {where} AND {versionColumn} = @{rowVersion.PropertyName}; "
+                    + "SELECT COUNT_BIG(*) FROM @__deleted;";
+            return (sql, parameters.ToArray(), rowVersion);
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]

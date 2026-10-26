@@ -63,6 +63,15 @@ public sealed class SqlServerDatabaseFixture : IDisposable
         """,
         "CREATE TABLE dbo.Matrix (DocId int NOT NULL, SizeId int NOT NULL, Qty int NOT NULL, CONSTRAINT PK_Matrix PRIMARY KEY (DocId, SizeId))",
         "CREATE TABLE dbo.Stamp (StampId int IDENTITY PRIMARY KEY, At datetime2(3) NOT NULL)",
+        "CREATE TABLE dbo.Setting (Code varchar(20) NOT NULL PRIMARY KEY, Value varchar(50) NOT NULL, CreatedAt datetime2(3) NOT NULL CONSTRAINT DF_Setting_CreatedAt DEFAULT SYSUTCDATETIME())",
+        "CREATE TABLE dbo.Numbered (Id int IDENTITY PRIMARY KEY, Title varchar(50) NOT NULL, DocNo varchar(20) NULL, RowVer rowversion)",
+        """
+        CREATE TRIGGER dbo.trg_Numbered_DocNo ON dbo.Numbered AFTER INSERT AS
+        BEGIN
+            -- No SET NOCOUNT ON, on purpose: the trigger's row count must not be taken for a result set.
+            UPDATE n SET DocNo = CONCAT('N-', n.Id) FROM dbo.Numbered n JOIN inserted i ON i.Id = n.Id;
+        END
+        """,
         """
         CREATE PROCEDURE dbo.usp_Fail AS
         BEGIN
@@ -125,6 +134,24 @@ public sealed class ItStamp
 {
     [Identity] public int StampId { get; set; }
     public DateTime At { get; set; }
+}
+
+[Table("Setting", Schema = "dbo")]
+public sealed class ItSetting
+{
+    [Key] public string Code { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+    [Computed] public DateTime CreatedAt { get; set; }
+}
+
+// An insert trigger fills DocNo, which also changes RowVer after the insert.
+[Table("Numbered", Schema = "dbo")]
+public sealed class ItNumbered
+{
+    [Identity] public int Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    [Computed] public string? DocNo { get; set; }
+    [RowVersion] public byte[]? RowVer { get; set; }
 }
 
 public class SqlServerIntegrationTests : IClassFixture<SqlServerDatabaseFixture>
@@ -201,6 +228,52 @@ public class SqlServerIntegrationTests : IClassFixture<SqlServerDatabaseFixture>
         Assert.Equal(doc.RowVer, stored.RowVer);
     }
 
+    [SqlServerFact]
+    public void InsertModel_WritesBackComputedAndDefaultValues()
+    {
+        var helper = Helper();
+        var doc = NewDoc("read-back");
+        helper.InsertModel(doc);
+
+        var stored = helper.GetModelByKey<ItDoc>(doc.DocId)!;
+        Assert.Equal(100, doc.PlannedQty);
+        Assert.Equal(stored.CreatedAt, doc.CreatedAt);
+        Assert.Equal(stored.RowVer, doc.RowVer);
+    }
+
+    [SqlServerFact]
+    public async Task InsertModelAsync_WritesBackComputedAndDefaultValues()
+    {
+        var helper = Helper();
+        var doc = NewDoc("read-back-async");
+        await helper.InsertModelAsync(doc);
+
+        var stored = (await helper.GetModelByKeyAsync<ItDoc>(doc.DocId))!;
+        Assert.Equal(100, doc.PlannedQty);
+        Assert.Equal(stored.CreatedAt, doc.CreatedAt);
+        Assert.Equal(stored.RowVer, doc.RowVer);
+    }
+
+    [SqlServerFact]
+    public void InsertModel_SuppliedKey_WritesBackDefault()
+    {
+        var setting = new ItSetting { Code = "S-" + Guid.NewGuid().ToString("N")[..8], Value = "v" };
+        Helper().InsertModel(setting);
+        Assert.True(setting.CreatedAt > DateTime.UtcNow.AddMinutes(-5));
+    }
+
+    [SqlServerFact]
+    public void InsertModel_TriggerChangesTheRow_WritesBackFinalValuesAndVersion()
+    {
+        var helper = Helper();
+        var row = new ItNumbered { Title = "first" };
+        helper.InsertModel(row);
+
+        Assert.Equal($"N-{row.Id}", row.DocNo);
+        row.Title = "second";
+        Assert.Equal(1, helper.UpdateModel(row));   // holds the version after the trigger, so no false conflict
+    }
+
     // ---- concurrency ----
 
     [SqlServerFact]
@@ -257,6 +330,39 @@ public class SqlServerIntegrationTests : IClassFixture<SqlServerDatabaseFixture>
         Assert.NotEqual(new DateTime(2000, 1, 1), stored.CreatedAt);
     }
 
+    [SqlServerFact]
+    public void DeleteModel_StaleRowVersion_ThrowsAndKeepsTheRow()
+    {
+        var helper = Helper();
+        var doc = NewDoc("delete-stale");
+        helper.InsertModel(doc);
+        var stale = helper.GetModelByKey<ItDoc>(doc.DocId)!;
+
+        doc.Styles = 7;
+        helper.UpdateModel(doc);
+
+        Assert.Throws<DBConcurrencyException>(() => helper.DeleteModel(stale));
+        Assert.True(helper.Exists<ItDoc>(doc.DocId));
+
+        Assert.Equal(1, helper.DeleteModel(doc));
+        Assert.False(helper.Exists<ItDoc>(doc.DocId));
+    }
+
+    [SqlServerFact]
+    public async Task DeleteModelAsync_StaleRowVersion_Throws()
+    {
+        var helper = Helper();
+        var doc = NewDoc("delete-stale-async");
+        await helper.InsertModelAsync(doc);
+        var stale = (await helper.GetModelByKeyAsync<ItDoc>(doc.DocId))!;
+
+        doc.Styles = 7;
+        await helper.UpdateModelAsync(doc);
+
+        await Assert.ThrowsAsync<DBConcurrencyException>(() => helper.DeleteModelAsync(stale));
+        Assert.Equal(1, await helper.DeleteModelAsync(doc));
+    }
+
     // ---- composite keys ----
 
     [SqlServerFact]
@@ -282,6 +388,10 @@ public class SqlServerIntegrationTests : IClassFixture<SqlServerDatabaseFixture>
         Assert.Equal(1, helper.DeleteByKey<ItMatrix>(new object[] { doc.DocId, 2 }));
         Assert.False(helper.Exists<ItMatrix>(new object[] { doc.DocId, 2 }));
         Assert.True(helper.Exists<ItMatrix>(new object[] { doc.DocId, 3 }));
+
+        Assert.Equal(1, helper.DeleteModel(new ItMatrix { DocId = doc.DocId, SizeId = 3 }));
+        Assert.False(helper.Exists<ItMatrix>(new object[] { doc.DocId, 3 }));
+        Assert.True(helper.Exists<ItMatrix>(new object[] { doc.DocId, 1 }));
     }
 
     // ---- datetime2 ----
@@ -369,5 +479,24 @@ public class SqlServerIntegrationTests : IClassFixture<SqlServerDatabaseFixture>
         Assert.Equal(4, stored.Styles);
         Assert.Equal(doc.RowVer, stored.RowVer);
         Assert.Equal(1, await helper.ExecuteScalarInterpolatedAsync<int>($"SELECT COUNT(*) FROM dbo.DocLine WHERE DocId = {doc.DocId}"));
+    }
+
+    [SqlServerFact]
+    public void SharedInterface_SameCodeRunsWithOrWithoutTransaction()
+    {
+        static ItDoc Save(ISqlServerOperations db, ItDoc doc)
+        {
+            db.InsertModel(doc);
+            return doc;
+        }
+
+        var helper = Helper();
+        var committed = Save(helper, NewDoc("ops-helper"));
+        ItDoc rolledBack;
+        using (var uow = helper.BeginTransaction())
+            rolledBack = Save(uow, NewDoc("ops-uow"));   // disposed without commit
+
+        Assert.True(helper.Exists<ItDoc>(committed.DocId));
+        Assert.False(helper.Exists<ItDoc>(rolledBack.DocId));
     }
 }

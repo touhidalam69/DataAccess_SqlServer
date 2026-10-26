@@ -66,11 +66,11 @@ public class KeyAndConcurrencyTests
     [Fact]
     public void Insert_Versioned_SkipsGeneratedColumnsAndReturnsIdentityAndVersion()
     {
-        var sql = SqlServerOperations.BuildInsertSql(ModelMetadataCache.Get<VersionedRow>(), tableName: null, includeIdentityOutput: true);
+        var sql = SqlServerOperations.BuildInsertSql(ModelMetadataCache.Get<VersionedRow>(), tableName: null, writeBack: true);
 
         Assert.Contains("INSERT INTO [planning].[Docs] ([Code], [CreatedBy])", sql);
         Assert.Contains("OUTPUT INSERTED.[Id], INSERTED.[RowVer] INTO @__generated", sql);
-        Assert.EndsWith("SELECT [__identity], [__rowversion] FROM @__generated;", sql);
+        Assert.Contains("SELECT [__identity], [__rowversion] FROM @__generated;", sql);
     }
 
     // ---- update ----

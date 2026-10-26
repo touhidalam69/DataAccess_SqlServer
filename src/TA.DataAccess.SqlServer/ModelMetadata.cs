@@ -40,6 +40,12 @@ namespace TA.DataAccess.SqlServer
         public required ColumnBinding? IdentityColumn { get; init; }
         public required ColumnBinding? RowVersionColumn { get; init; }
 
+        /// <summary>
+        /// Columns read back after an insert: every [Computed] and [RowVersion] column, when the model has a
+        /// [Computed] one and the new row can be found by its [Identity] or by [Key] values the model supplies.
+        /// </summary>
+        public required ColumnBinding[] InsertReadBackColumns { get; init; }
+
         /// <summary>The first key column (the only one unless the key is composite).</summary>
         public ColumnBinding? KeyColumn => KeyColumns.Length > 0 ? KeyColumns[0] : null;
 
@@ -112,6 +118,11 @@ namespace TA.DataAccess.SqlServer
                 throw new InvalidOperationException(
                     $"[RowVersion] property '{type.FullName}.{rowVersions[0].PropertyName}' must be of type byte[].");
 
+            var canFindNewRow = identity is not null || (keys.Length > 0 && keys.All(k => !k.IsComputed));
+            var readBack = canFindNewRow && columns.Any(c => c.IsComputed && !c.IsRowVersion)
+                ? columns.Where(c => c.IsComputed).ToArray()
+                : Array.Empty<ColumnBinding>();
+
             return new ModelMetadata
             {
                 ModelType = type,
@@ -123,6 +134,7 @@ namespace TA.DataAccess.SqlServer
                 KeyColumns = keys,
                 IdentityColumn = identity,
                 RowVersionColumn = rowVersions.FirstOrDefault(),
+                InsertReadBackColumns = readBack,
             };
         }
 
