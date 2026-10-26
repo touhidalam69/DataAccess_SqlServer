@@ -58,6 +58,36 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
         Task<List<T>> SelectPagedAsync<T>(string query, int page, int pageSize, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T : new();
 
+        /// <summary>
+        /// Runs a batch that returns two result sets (for example a header and its lines) in one round
+        /// trip and maps them in order. Throws if the batch returns fewer result sets.
+        /// </summary>
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        (List<T1> First, List<T2> Second) SelectMultiple<T1, T2>(string query, SqlParameter[]? parameters = null) where T1 : new() where T2 : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        Task<(List<T1> First, List<T2> Second)> SelectMultipleAsync<T1, T2>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T1 : new() where T2 : new();
+
+        /// <summary>Like <see cref="SelectMultiple{T1, T2}"/> for three result sets.</summary>
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        (List<T1> First, List<T2> Second, List<T3> Third) SelectMultiple<T1, T2, T3>(string query, SqlParameter[]? parameters = null) where T1 : new() where T2 : new() where T3 : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        Task<(List<T1> First, List<T2> Second, List<T3> Third)> SelectMultipleAsync<T1, T2, T3>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default) where T1 : new() where T2 : new() where T3 : new();
+
+        /// <summary>Parameterized (interpolated) form of <see cref="SelectMultiple{T1, T2}"/>.</summary>
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        (List<T1> First, List<T2> Second) SelectMultipleInterpolated<T1, T2>(FormattableString query) where T1 : new() where T2 : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        Task<(List<T1> First, List<T2> Second)> SelectMultipleInterpolatedAsync<T1, T2>(FormattableString query, CancellationToken cancellationToken = default) where T1 : new() where T2 : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        (List<T1> First, List<T2> Second, List<T3> Third) SelectMultipleInterpolated<T1, T2, T3>(FormattableString query) where T1 : new() where T2 : new() where T3 : new();
+
+        [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
+        Task<(List<T1> First, List<T2> Second, List<T3> Third)> SelectMultipleInterpolatedAsync<T1, T2, T3>(FormattableString query, CancellationToken cancellationToken = default) where T1 : new() where T2 : new() where T3 : new();
+
         [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
         int InsertModel<T>(T model, string? tableName = null);
 
@@ -94,6 +124,13 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps SqlDataReader columns to T via reflection.")]
         Task<T?> GetModelByKeyAsync<T>(object id, CancellationToken cancellationToken = default) where T : new();
 
+        /// <summary>
+        /// Updates the row matching the model's key: all [Key] columns (composite keys supported), or
+        /// <paramref name="idColumn"/> when given. [Identity], [Computed], [RowVersion] and [InsertOnly]
+        /// columns are not written. With a [RowVersion] column the stored version must also match;
+        /// otherwise <see cref="DBConcurrencyException"/> is thrown, and on success the new version is
+        /// written back onto the model.
+        /// </summary>
         [RequiresUnreferencedCode("Updates properties of T via reflection.")]
         int UpdateModel<T>(T model, string? tableName = null, string? idColumn = null);
 
@@ -103,6 +140,11 @@ namespace TA.DataAccess.SqlServer
         int DeleteModel(string tableName, string idColumn, object id);
         Task<int> DeleteModelAsync(string tableName, string idColumn, object id, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Deletes by the [Key]/[Identity] of <typeparamref name="T"/>. For a composite key pass an
+        /// <c>object[]</c> with one value per key column in key order; a single value is rejected.
+        /// The same applies to <c>GetModelByKey</c> and <c>Exists</c>.
+        /// </summary>
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
         int DeleteByKey<T>(object id);
 

@@ -10,8 +10,10 @@ public class SqlBuilderTests
         var metadata = ModelMetadataCache.Get<ProductRow>();
         var sql = SqlServerOperations.BuildInsertSql(metadata, tableName: null, includeIdentityOutput: true);
 
-        Assert.StartsWith("INSERT INTO [catalog].[Products]", sql);
-        Assert.Contains("OUTPUT INSERTED.[Id]", sql);
+        Assert.Contains("INSERT INTO [catalog].[Products]", sql);
+        // OUTPUT goes INTO a table variable: a bare OUTPUT is rejected on tables with triggers (error 334).
+        Assert.Contains("OUTPUT INSERTED.[Id] INTO @__generated", sql);
+        Assert.EndsWith("SELECT [__identity] FROM @__generated;", sql);
         // Identity is excluded from the column/value lists; NoCrud is excluded entirely.
         Assert.DoesNotContain("[Id],", sql);
         Assert.DoesNotContain("Note", sql);

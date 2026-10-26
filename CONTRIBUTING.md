@@ -12,6 +12,15 @@ dotnet build src/DataAccess_SqlServer.sln -c Release
 dotnet test src/TA.DataAccess.SqlServer.Tests/TA.DataAccess.SqlServer.Tests.csproj
 ```
 
+The integration tests (`SqlServerIntegrationTests`) run against a real SQL Server and are skipped
+unless `TA_SQLSERVER_TEST_CONNECTION` holds a connection string to a server (no database). They
+create a throw-away database and drop it afterwards:
+
+```powershell
+$env:TA_SQLSERVER_TEST_CONNECTION = "Server=.;Integrated Security=True;TrustServerCertificate=True"
+dotnet test src/TA.DataAccess.SqlServer.Tests/TA.DataAccess.SqlServer.Tests.csproj
+```
+
 ## Branching
 
 - `main` is always shippable.
@@ -54,8 +63,19 @@ Pre-release tags use `-preview.N` or `-rc.N`.
 
 1. Bump `<Version>` in `src/TA.DataAccess.SqlServer/TA.DataAccess.SqlServer.csproj` per SemVer rules above.
 2. Update `<PackageReleaseNotes>`.
-3. Tag: `git tag v2.0.0 && git push --tags`.
-4. CI workflow publishes to NuGet on tag push.
+3. Run the tests, including the integration tests against a SQL Server.
+4. Commit, then tag: `git tag v2.0.0 && git push --tags`.
+5. CI workflow publishes to NuGet on tag push.
+
+To pack locally, commit first (Source Link records the current commit), then pack every target in one go:
+
+```sh
+dotnet pack src/TA.DataAccess.SqlServer/TA.DataAccess.SqlServer.csproj -c Release -o artifacts
+```
+
+`GeneratePackageOnBuild` is off on purpose: a build of a single target (for example from the IDE)
+used to produce a package whose other targets were stale builds, which is how 2.2.0 shipped
+net8.0/net9.0 assemblies without the 2.2.0 API.
 
 ## Code style
 

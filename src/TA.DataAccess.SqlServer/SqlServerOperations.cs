@@ -1,6 +1,7 @@
 using System.Data;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -203,6 +204,81 @@ namespace TA.DataAccess.SqlServer
             }
         }
 
+        private TResult RunReader<TResult>(string sql, SqlParameter[]? parameters, Func<SqlDataReader, TResult> read)
+        {
+            EnsureQuery(sql);
+            var connection = GetOpenConnection(out var owns);
+            try
+            {
+                using var command = NewCommand(sql, connection, CommandType.Text);
+                AddParameters(command, parameters);
+                return Time(sql, parameters, () =>
+                {
+                    using var reader = command.ExecuteReader();
+                    return read(reader);
+                });
+            }
+            finally
+            {
+                if (owns) connection.Dispose();
+            }
+        }
+
+        private async Task<TResult> RunReaderAsync<TResult>(string sql, SqlParameter[]? parameters, Func<SqlDataReader, CancellationToken, Task<TResult>> read, CancellationToken cancellationToken)
+        {
+            EnsureQuery(sql);
+            var (connection, owns) = await GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await using var command = NewCommand(sql, connection, CommandType.Text);
+                AddParameters(command, parameters);
+                return await TimeAsync(sql, parameters, async () =>
+                {
+                    await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    return await read(reader, cancellationToken).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (owns) await connection.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Values of the first row of the first result set, or null when there is no row.</summary>
+        private object[]? RunFirstRow(string sql, SqlParameter[]? parameters)
+            => RunReader(sql, parameters, reader =>
+            {
+                if (!reader.Read()) return null;
+                var values = new object[reader.FieldCount];
+                reader.GetValues(values);
+                return values;
+            });
+
+        private Task<object[]?> RunFirstRowAsync(string sql, SqlParameter[]? parameters, CancellationToken cancellationToken)
+            => RunReaderAsync<object[]?>(sql, parameters, async (reader, ct) =>
+            {
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+                var values = new object[reader.FieldCount];
+                reader.GetValues(values);
+                return values;
+            }, cancellationToken);
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        private static List<TModel> ReadSet<TModel>(SqlDataReader reader, int index) where TModel : new()
+        {
+            if (index > 0 && !reader.NextResult())
+                throw new InvalidOperationException($"The query returned {index} result set(s); at least {index + 1} were expected.");
+            return ReaderMapper.MapAll<TModel>(reader);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        private static async Task<List<TModel>> ReadSetAsync<TModel>(SqlDataReader reader, int index, CancellationToken cancellationToken) where TModel : new()
+        {
+            if (index > 0 && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException($"The query returned {index} result set(s); at least {index + 1} were expected.");
+            return await ReaderMapper.MapAllAsync<TModel>(reader, cancellationToken).ConfigureAwait(false);
+        }
+
         // ---- raw SQL ----
 
         public int ExecuteNonQuery(string query, SqlParameter[]? parameters = null)
@@ -273,13 +349,13 @@ namespace TA.DataAccess.SqlServer
 
         public int ExecuteInterpolated(FormattableString query)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunNonQuery(sql, parameters, CommandType.Text);
         }
 
         public Task<int> ExecuteInterpolatedAsync(FormattableString query, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken);
         }
 
@@ -294,7 +370,7 @@ namespace TA.DataAccess.SqlServer
                 int rowsAffected = 0;
                 foreach (var query in queries)
                 {
-                    var (sql, parameters) = ParameterizeInterpolation(query);
+                    var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
                     command.CommandText = sql;
                     command.Parameters.Clear();
                     AddParameters(command, parameters);
@@ -326,7 +402,7 @@ namespace TA.DataAccess.SqlServer
                 int rowsAffected = 0;
                 foreach (var query in queries)
                 {
-                    var (sql, parameters) = ParameterizeInterpolation(query);
+                    var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
                     command.CommandText = sql;
                     command.Parameters.Clear();
                     AddParameters(command, parameters);
@@ -357,13 +433,13 @@ namespace TA.DataAccess.SqlServer
 
         public T? ExecuteScalarInterpolated<T>(FormattableString query)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return CoerceScalar<T>(RunScalarRaw(sql, parameters, CommandType.Text));
         }
 
         public async Task<T?> ExecuteScalarInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return CoerceScalar<T>(await RunScalarRawAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false));
         }
 
@@ -389,34 +465,34 @@ namespace TA.DataAccess.SqlServer
 
         public DataTable SelectInterpolated(FormattableString query)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunDataTable(sql, parameters, CommandType.Text);
         }
 
         public Task<DataTable> SelectInterpolatedAsync(FormattableString query, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunDataTableAsync(sql, parameters, CommandType.Text, cancellationToken);
         }
 
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public List<T> SelectInterpolated<T>(FormattableString query) where T : new()
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunList<T>(sql, parameters, CommandType.Text);
         }
 
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public Task<List<T>> SelectInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new()
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunListAsync<T>(sql, parameters, CommandType.Text, cancellationToken);
         }
 
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public IAsyncEnumerable<T> SelectStreamInterpolatedAsync<T>(FormattableString query, CancellationToken cancellationToken = default) where T : new()
         {
-            var (sql, parameters) = ParameterizeInterpolation(query);
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
             return RunStream<T>(sql, parameters, cancellationToken);
         }
 
@@ -434,20 +510,78 @@ namespace TA.DataAccess.SqlServer
             return RunListAsync<T>(sql, merged, CommandType.Text, cancellationToken);
         }
 
+        // ---- multiple result sets ----
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public (List<T1> First, List<T2> Second) SelectMultiple<T1, T2>(string query, SqlParameter[]? parameters = null)
+            where T1 : new() where T2 : new()
+            => RunReader(query, parameters, reader => (ReadSet<T1>(reader, 0), ReadSet<T2>(reader, 1)));
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<(List<T1> First, List<T2> Second)> SelectMultipleAsync<T1, T2>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default)
+            where T1 : new() where T2 : new()
+            => RunReaderAsync(query, parameters, async (reader, ct) =>
+                (await ReadSetAsync<T1>(reader, 0, ct).ConfigureAwait(false),
+                 await ReadSetAsync<T2>(reader, 1, ct).ConfigureAwait(false)), cancellationToken);
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public (List<T1> First, List<T2> Second, List<T3> Third) SelectMultiple<T1, T2, T3>(string query, SqlParameter[]? parameters = null)
+            where T1 : new() where T2 : new() where T3 : new()
+            => RunReader(query, parameters, reader => (ReadSet<T1>(reader, 0), ReadSet<T2>(reader, 1), ReadSet<T3>(reader, 2)));
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<(List<T1> First, List<T2> Second, List<T3> Third)> SelectMultipleAsync<T1, T2, T3>(string query, SqlParameter[]? parameters = null, CancellationToken cancellationToken = default)
+            where T1 : new() where T2 : new() where T3 : new()
+            => RunReaderAsync(query, parameters, async (reader, ct) =>
+                (await ReadSetAsync<T1>(reader, 0, ct).ConfigureAwait(false),
+                 await ReadSetAsync<T2>(reader, 1, ct).ConfigureAwait(false),
+                 await ReadSetAsync<T3>(reader, 2, ct).ConfigureAwait(false)), cancellationToken);
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public (List<T1> First, List<T2> Second) SelectMultipleInterpolated<T1, T2>(FormattableString query)
+            where T1 : new() where T2 : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
+            return SelectMultiple<T1, T2>(sql, parameters);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<(List<T1> First, List<T2> Second)> SelectMultipleInterpolatedAsync<T1, T2>(FormattableString query, CancellationToken cancellationToken = default)
+            where T1 : new() where T2 : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
+            return SelectMultipleAsync<T1, T2>(sql, parameters, cancellationToken);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public (List<T1> First, List<T2> Second, List<T3> Third) SelectMultipleInterpolated<T1, T2, T3>(FormattableString query)
+            where T1 : new() where T2 : new() where T3 : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
+            return SelectMultiple<T1, T2, T3>(sql, parameters);
+        }
+
+        [RequiresUnreferencedCode("Maps reader columns via reflection.")]
+        public Task<(List<T1> First, List<T2> Second, List<T3> Third)> SelectMultipleInterpolatedAsync<T1, T2, T3>(FormattableString query, CancellationToken cancellationToken = default)
+            where T1 : new() where T2 : new() where T3 : new()
+        {
+            var (sql, parameters) = ParameterizeInterpolation(query, _options.UseDateTime2);
+            return SelectMultipleAsync<T1, T2, T3>(sql, parameters, cancellationToken);
+        }
+
         // ---- model CRUD ----
 
         [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
         public int InsertModel<T>(T model, string? tableName = null)
         {
             var metadata = ModelMetadataCache.Get<T>();
-            var identity = metadata.IdentityColumn;
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: identity is not null);
-            var parameters = BuildInsertParameters(metadata, model!);
-            if (identity is null)
+            var writeBack = HasGeneratedOutput(metadata);
+            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: writeBack);
+            var parameters = BuildInsertParameters(metadata, model!, _options.UseDateTime2);
+            if (!writeBack)
                 return RunNonQuery(sql, parameters, CommandType.Text);
 
-            var generated = RunScalarRaw(sql, parameters, CommandType.Text);
-            WriteBackIdentity(identity, model!, generated);
+            WriteBackGenerated(metadata, model!, RunFirstRow(sql, parameters));
             return 1;
         }
 
@@ -455,14 +589,13 @@ namespace TA.DataAccess.SqlServer
         public async Task<int> InsertModelAsync<T>(T model, string? tableName = null, CancellationToken cancellationToken = default)
         {
             var metadata = ModelMetadataCache.Get<T>();
-            var identity = metadata.IdentityColumn;
-            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: identity is not null);
-            var parameters = BuildInsertParameters(metadata, model!);
-            if (identity is null)
+            var writeBack = HasGeneratedOutput(metadata);
+            var sql = BuildInsertSql(metadata, tableName, includeIdentityOutput: writeBack);
+            var parameters = BuildInsertParameters(metadata, model!, _options.UseDateTime2);
+            if (!writeBack)
                 return await RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
 
-            var generated = await RunScalarRawAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
-            WriteBackIdentity(identity, model!, generated);
+            WriteBackGenerated(metadata, model!, await RunFirstRowAsync(sql, parameters, cancellationToken).ConfigureAwait(false));
             return 1;
         }
 
@@ -483,7 +616,7 @@ namespace TA.DataAccess.SqlServer
                 {
                     command.Parameters.Clear();
                     foreach (var column in metadata.InsertableColumns)
-                        command.Parameters.Add(ParameterFactory.Create($"@{column.PropertyName}", column.Getter(model!)));
+                        command.Parameters.Add(ParameterFactory.Create($"@{column.PropertyName}", column.Getter(model!), _options.UseDateTime2));
                     rowsAffected += command.ExecuteNonQuery();
                 }
                 localTransaction?.Commit();
@@ -518,7 +651,7 @@ namespace TA.DataAccess.SqlServer
                 {
                     command.Parameters.Clear();
                     foreach (var column in metadata.InsertableColumns)
-                        command.Parameters.Add(ParameterFactory.Create($"@{column.PropertyName}", column.Getter(model!)));
+                        command.Parameters.Add(ParameterFactory.Create($"@{column.PropertyName}", column.Getter(model!), _options.UseDateTime2));
                     rowsAffected += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
                 if (localTransaction is not null) await localTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -589,7 +722,7 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public T? GetModelById<T>(string tableName, string idColumn, object id) where T : new()
         {
-            var (sql, parameters) = BuildSelectById(tableName, idColumn, id);
+            var (sql, parameters) = BuildSelectById(tableName, idColumn, id, _options.UseDateTime2);
             var results = RunList<T>(sql, parameters, CommandType.Text);
             return results.Count > 0 ? results[0] : default;
         }
@@ -597,7 +730,7 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public async Task<T?> GetModelByIdAsync<T>(string tableName, string idColumn, object id, CancellationToken cancellationToken = default) where T : new()
         {
-            var (sql, parameters) = BuildSelectById(tableName, idColumn, id);
+            var (sql, parameters) = BuildSelectById(tableName, idColumn, id, _options.UseDateTime2);
             var results = await RunListAsync<T>(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
             return results.Count > 0 ? results[0] : default;
         }
@@ -605,7 +738,7 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public T? GetModelByKey<T>(object id) where T : new()
         {
-            var (sql, parameters) = BuildSelectByKey<T>(id);
+            var (sql, parameters) = BuildSelectByKey<T>(id, _options.UseDateTime2);
             var results = RunList<T>(sql, parameters, CommandType.Text);
             return results.Count > 0 ? results[0] : default;
         }
@@ -613,7 +746,7 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Maps reader columns via reflection.")]
         public async Task<T?> GetModelByKeyAsync<T>(object id, CancellationToken cancellationToken = default) where T : new()
         {
-            var (sql, parameters) = BuildSelectByKey<T>(id);
+            var (sql, parameters) = BuildSelectByKey<T>(id, _options.UseDateTime2);
             var results = await RunListAsync<T>(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
             return results.Count > 0 ? results[0] : default;
         }
@@ -621,40 +754,46 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Updates properties of T via reflection.")]
         public int UpdateModel<T>(T model, string? tableName = null, string? idColumn = null)
         {
-            var (sql, parameters) = BuildUpdate(model, tableName, idColumn);
-            return RunNonQuery(sql, parameters, CommandType.Text);
+            var (sql, parameters, rowVersion) = BuildUpdate(model, tableName, idColumn, _options.UseDateTime2);
+            if (rowVersion is null)
+                return RunNonQuery(sql, parameters, CommandType.Text);
+
+            return CompleteVersionedUpdate(model!, rowVersion, RunFirstRow(sql, parameters));
         }
 
         [RequiresUnreferencedCode("Updates properties of T via reflection.")]
-        public Task<int> UpdateModelAsync<T>(T model, string? tableName = null, string? idColumn = null, CancellationToken cancellationToken = default)
+        public async Task<int> UpdateModelAsync<T>(T model, string? tableName = null, string? idColumn = null, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = BuildUpdate(model, tableName, idColumn);
-            return RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken);
+            var (sql, parameters, rowVersion) = BuildUpdate(model, tableName, idColumn, _options.UseDateTime2);
+            if (rowVersion is null)
+                return await RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken).ConfigureAwait(false);
+
+            return CompleteVersionedUpdate(model!, rowVersion, await RunFirstRowAsync(sql, parameters, cancellationToken).ConfigureAwait(false));
         }
 
         public int DeleteModel(string tableName, string idColumn, object id)
         {
-            var (sql, parameters) = BuildDelete(tableName, idColumn, id);
+            var (sql, parameters) = BuildDelete(tableName, idColumn, id, _options.UseDateTime2);
             return RunNonQuery(sql, parameters, CommandType.Text);
         }
 
         public Task<int> DeleteModelAsync(string tableName, string idColumn, object id, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = BuildDelete(tableName, idColumn, id);
+            var (sql, parameters) = BuildDelete(tableName, idColumn, id, _options.UseDateTime2);
             return RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken);
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
         public int DeleteByKey<T>(object id)
         {
-            var (sql, parameters) = BuildDeleteByKey<T>(id);
+            var (sql, parameters) = BuildDeleteByKey<T>(id, _options.UseDateTime2);
             return RunNonQuery(sql, parameters, CommandType.Text);
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
         public Task<int> DeleteByKeyAsync<T>(object id, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = BuildDeleteByKey<T>(id);
+            var (sql, parameters) = BuildDeleteByKey<T>(id, _options.UseDateTime2);
             return RunNonQueryAsync(sql, parameters, CommandType.Text, cancellationToken);
         }
 
@@ -675,14 +814,14 @@ namespace TA.DataAccess.SqlServer
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
         public bool Exists<T>(object id)
         {
-            var (sql, parameters) = BuildExists<T>(id);
+            var (sql, parameters) = BuildExists<T>(id, _options.UseDateTime2);
             return ExecuteScalar<int>(sql, parameters) == 1;
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
         public async Task<bool> ExistsAsync<T>(object id, CancellationToken cancellationToken = default)
         {
-            var (sql, parameters) = BuildExists<T>(id);
+            var (sql, parameters) = BuildExists<T>(id, _options.UseDateTime2);
             return await ExecuteScalarAsync<int>(sql, parameters, cancellationToken).ConfigureAwait(false) == 1;
         }
 
@@ -724,18 +863,46 @@ namespace TA.DataAccess.SqlServer
             return (T)ValueCoercion.Coerce(result, target);
         }
 
-        private static void WriteBackIdentity(ColumnBinding identity, object model, object? generated)
+        private static bool HasGeneratedOutput(ModelMetadata metadata)
+            => metadata.IdentityColumn is not null || metadata.RowVersionColumn is not null;
+
+        /// <summary>Writes the generated identity and rowversion (in that order, when present) back onto the model.</summary>
+        private static void WriteBackGenerated(ModelMetadata metadata, object model, object[]? row)
         {
-            if (generated is null || generated is DBNull) return;
-            identity.Setter(model, identity.Convert(generated));
+            if (row is null) return;
+            int index = 0;
+            if (metadata.IdentityColumn is { } identity) SetGenerated(identity, model, row[index++]);
+            if (metadata.RowVersionColumn is { } rowVersion) SetGenerated(rowVersion, model, row[index]);
+        }
+
+        private static void SetGenerated(ColumnBinding binding, object model, object? value)
+        {
+            if (value is null || value is DBNull) return;
+            binding.Setter(model, binding.Convert(value));
+        }
+
+        /// <summary>Reads the (count, new rowversion) row of a versioned update; no row matched means a concurrency conflict.</summary>
+        private static int CompleteVersionedUpdate(object model, ColumnBinding rowVersion, object[]? row)
+        {
+            var count = row is null || row[0] is DBNull ? 0L : Convert.ToInt64(row[0], CultureInfo.InvariantCulture);
+            if (count == 0)
+                throw new DBConcurrencyException(
+                    $"No '{model.GetType().Name}' row matched the key and {rowVersion.PropertyName}: it was changed or deleted by someone else. Reload it and try again.");
+            SetGenerated(rowVersion, model, row![1]);
+            return (int)count;
         }
 
         [RequiresUnreferencedCode("Inserts properties of T via reflection.")]
-        private static SqlParameter[] BuildInsertParameters(ModelMetadata metadata, object model)
+        private static SqlParameter[] BuildInsertParameters(ModelMetadata metadata, object model, bool dateTime2 = false)
             => metadata.InsertableColumns
-                .Select(c => ParameterFactory.Create($"@{c.PropertyName}", c.Getter(model)))
+                .Select(c => ParameterFactory.Create($"@{c.PropertyName}", c.Getter(model), dateTime2))
                 .ToArray();
 
+        /// <summary>
+        /// Builds the INSERT. With <paramref name="includeIdentityOutput"/>, the generated [Identity] and
+        /// [RowVersion] values are returned through <c>OUTPUT ... INTO</c> a table variable; a bare
+        /// <c>OUTPUT</c> clause is rejected by SQL Server on tables that have triggers.
+        /// </summary>
         internal static string BuildInsertSql(ModelMetadata metadata, string? tableName, bool includeIdentityOutput)
         {
             if (metadata.InsertableColumns.Length == 0)
@@ -744,78 +911,149 @@ namespace TA.DataAccess.SqlServer
             var table = ResolveTableName(tableName, metadata);
             var columnNames = string.Join(", ", metadata.InsertableColumns.Select(c => Identifier.Quote(c.ColumnName)));
             var parameterNames = string.Join(", ", metadata.InsertableColumns.Select(c => $"@{c.PropertyName}"));
-            var output = includeIdentityOutput && metadata.IdentityColumn is { } identity
-                ? $" OUTPUT INSERTED.{Identifier.Quote(identity.ColumnName)}"
-                : string.Empty;
-            return $"INSERT INTO {table} ({columnNames}){output} VALUES ({parameterNames})";
+
+            var declarations = new List<string>(2);
+            var outputs = new List<string>(2);
+            var selected = new List<string>(2);
+            if (includeIdentityOutput && metadata.IdentityColumn is { } identity)
+            {
+                declarations.Add("[__identity] sql_variant");
+                outputs.Add($"INSERTED.{Identifier.Quote(identity.ColumnName)}");
+                selected.Add("[__identity]");
+            }
+            if (includeIdentityOutput && metadata.RowVersionColumn is { } rowVersion)
+            {
+                declarations.Add("[__rowversion] binary(8)");
+                outputs.Add($"INSERTED.{Identifier.Quote(rowVersion.ColumnName)}");
+                selected.Add("[__rowversion]");
+            }
+
+            if (outputs.Count == 0)
+                return $"INSERT INTO {table} ({columnNames}) VALUES ({parameterNames})";
+
+            return $"DECLARE @__generated TABLE ({string.Join(", ", declarations)}); "
+                 + $"INSERT INTO {table} ({columnNames}) OUTPUT {string.Join(", ", outputs)} INTO @__generated VALUES ({parameterNames}); "
+                 + $"SELECT {string.Join(", ", selected)} FROM @__generated;";
         }
 
-        private static (string Sql, SqlParameter[] Parameters) BuildSelectById(string tableName, string idColumn, object id)
+        private static (string Sql, SqlParameter[] Parameters) BuildSelectById(string tableName, string idColumn, object id, bool dateTime2 = false)
         {
             if (id is null) throw new ArgumentNullException(nameof(id));
             var sql = $"SELECT * FROM {Identifier.Quote(tableName)} WHERE {Identifier.Quote(idColumn)} = @Id";
-            return (sql, new[] { ParameterFactory.Create("@Id", id) });
+            return (sql, new[] { ParameterFactory.Create("@Id", id, dateTime2) });
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
-        internal static (string Sql, SqlParameter[] Parameters) BuildSelectByKey<T>(object id)
+        internal static (string Sql, SqlParameter[] Parameters) BuildSelectByKey<T>(object id, bool dateTime2 = false)
         {
-            if (id is null) throw new ArgumentNullException(nameof(id));
             var metadata = ModelMetadataCache.Get<T>();
-            var key = metadata.GetKeyColumn(null);
-            var sql = $"SELECT * FROM {ResolveTableName(null, metadata)} WHERE {Identifier.Quote(key.ColumnName)} = @Id";
-            return (sql, new[] { ParameterFactory.Create("@Id", id) });
+            var (where, parameters) = BuildKeyPredicate(metadata, id, dateTime2);
+            return ($"SELECT * FROM {ResolveTableName(null, metadata)} WHERE {where}", parameters);
         }
 
+        /// <summary>
+        /// Builds the UPDATE. Keys come from <paramref name="idColumn"/> or all [Key] columns; the SET list
+        /// skips keys, [Identity], [Computed], [RowVersion] and [InsertOnly] columns. With a [RowVersion]
+        /// column the WHERE also matches the version, and the batch returns (rows updated, new version).
+        /// </summary>
         [RequiresUnreferencedCode("Updates properties of T via reflection.")]
-        private static (string Sql, SqlParameter[] Parameters) BuildUpdate<T>(T model, string? tableName, string? idColumn)
+        internal static (string Sql, SqlParameter[] Parameters, ColumnBinding? RowVersion) BuildUpdate<T>(T model, string? tableName, string? idColumn, bool dateTime2 = false)
         {
             if (model is null) throw new ArgumentNullException(nameof(model));
             var metadata = ModelMetadataCache.Get<T>();
-            var keyBinding = metadata.GetKeyColumn(idColumn);
+            var keys = metadata.GetKeyColumns(idColumn);
 
-            var updatable = metadata.Columns
-                .Where(c => !c.IsIdentity && c.PropertyName != keyBinding.PropertyName)
+            var updatable = metadata.UpdatableColumns
+                .Where(c => !keys.Any(k => k.PropertyName == c.PropertyName))
                 .ToArray();
             if (updatable.Length == 0)
                 throw new InvalidOperationException($"Type '{metadata.ModelType.FullName}' has no updatable columns.");
 
             var table = ResolveTableName(tableName, metadata);
             var setClause = string.Join(", ", updatable.Select(c => $"{Identifier.Quote(c.ColumnName)} = @{c.PropertyName}"));
-            var sql = $"UPDATE {table} SET {setClause} WHERE {Identifier.Quote(keyBinding.ColumnName)} = @{keyBinding.PropertyName}";
+            var where = string.Join(" AND ", keys.Select(k => $"{Identifier.Quote(k.ColumnName)} = @{k.PropertyName}"));
 
-            var parameters = new SqlParameter[updatable.Length + 1];
-            for (int i = 0; i < updatable.Length; i++)
-                parameters[i] = ParameterFactory.Create($"@{updatable[i].PropertyName}", updatable[i].Getter(model!));
-            parameters[^1] = ParameterFactory.Create($"@{keyBinding.PropertyName}", keyBinding.Getter(model!));
-            return (sql, parameters);
+            var parameters = new List<SqlParameter>(updatable.Length + keys.Length + 1);
+            parameters.AddRange(updatable.Select(c => ParameterFactory.Create($"@{c.PropertyName}", c.Getter(model!), dateTime2)));
+            parameters.AddRange(keys.Select(k => ParameterFactory.Create($"@{k.PropertyName}", k.Getter(model!), dateTime2)));
+
+            var rowVersion = metadata.RowVersionColumn;
+            if (rowVersion is null)
+                return ($"UPDATE {table} SET {setClause} WHERE {where}", parameters.ToArray(), null);
+
+            var currentVersion = rowVersion.Getter(model!)
+                ?? throw new InvalidOperationException(
+                    $"[RowVersion] property '{metadata.ModelType.FullName}.{rowVersion.PropertyName}' is null; load the row (or carry its version from the client) before updating.");
+            parameters.Add(ParameterFactory.Create($"@{rowVersion.PropertyName}", currentVersion));
+
+            var versionColumn = Identifier.Quote(rowVersion.ColumnName);
+            var sql = "DECLARE @__updated TABLE ([__rowversion] binary(8)); "
+                    + $"UPDATE {table} SET {setClause} OUTPUT INSERTED.{versionColumn} INTO @__updated "
+                    + $"WHERE {where} AND {versionColumn} = @{rowVersion.PropertyName}; "
+                    + "SELECT COUNT_BIG(*), MAX([__rowversion]) FROM @__updated;";
+            return (sql, parameters.ToArray(), rowVersion);
         }
 
-        private static (string Sql, SqlParameter[] Parameters) BuildDelete(string tableName, string idColumn, object id)
+        private static (string Sql, SqlParameter[] Parameters) BuildDelete(string tableName, string idColumn, object id, bool dateTime2 = false)
         {
             if (id is null) throw new ArgumentNullException(nameof(id));
             var sql = $"DELETE FROM {Identifier.Quote(tableName)} WHERE {Identifier.Quote(idColumn)} = @Id";
-            return (sql, new[] { ParameterFactory.Create("@Id", id) });
+            return (sql, new[] { ParameterFactory.Create("@Id", id, dateTime2) });
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
-        internal static (string Sql, SqlParameter[] Parameters) BuildDeleteByKey<T>(object id)
+        internal static (string Sql, SqlParameter[] Parameters) BuildDeleteByKey<T>(object id, bool dateTime2 = false)
         {
-            if (id is null) throw new ArgumentNullException(nameof(id));
             var metadata = ModelMetadataCache.Get<T>();
-            var key = metadata.GetKeyColumn(null);
-            var sql = $"DELETE FROM {ResolveTableName(null, metadata)} WHERE {Identifier.Quote(key.ColumnName)} = @Id";
-            return (sql, new[] { ParameterFactory.Create("@Id", id) });
+            var (where, parameters) = BuildKeyPredicate(metadata, id, dateTime2);
+            return ($"DELETE FROM {ResolveTableName(null, metadata)} WHERE {where}", parameters);
         }
 
         [RequiresUnreferencedCode("Resolves T key via reflection.")]
-        internal static (string Sql, SqlParameter[] Parameters) BuildExists<T>(object id)
+        internal static (string Sql, SqlParameter[] Parameters) BuildExists<T>(object id, bool dateTime2 = false)
+        {
+            var metadata = ModelMetadataCache.Get<T>();
+            var (where, parameters) = BuildKeyPredicate(metadata, id, dateTime2);
+            return ($"SELECT CASE WHEN EXISTS (SELECT 1 FROM {ResolveTableName(null, metadata)} WHERE {where}) THEN 1 ELSE 0 END", parameters);
+        }
+
+        /// <summary>
+        /// WHERE predicate for the by-key methods. A single key takes the value itself (<c>[k] = @Id</c>);
+        /// a composite key takes an <c>object[]</c> with one value per key column, in key order
+        /// (<c>[a] = @Id0 AND [b] = @Id1</c>). Anything else is rejected rather than matching on part of the key.
+        /// </summary>
+        internal static (string Where, SqlParameter[] Parameters) BuildKeyPredicate(ModelMetadata metadata, object id, bool dateTime2 = false)
         {
             if (id is null) throw new ArgumentNullException(nameof(id));
-            var metadata = ModelMetadataCache.Get<T>();
-            var key = metadata.GetKeyColumn(null);
-            var sql = $"SELECT CASE WHEN EXISTS (SELECT 1 FROM {ResolveTableName(null, metadata)} WHERE {Identifier.Quote(key.ColumnName)} = @Id) THEN 1 ELSE 0 END";
-            return (sql, new[] { ParameterFactory.Create("@Id", id) });
+            var keys = metadata.GetKeyColumns(null);
+
+            if (keys.Length == 1)
+            {
+                var value = id;
+                if (id is object[] array)
+                {
+                    if (array.Length != 1)
+                        throw new ArgumentException(
+                            $"Type '{metadata.ModelType.FullName}' has a single key ({keys[0].PropertyName}) but {array.Length} key values were passed.", nameof(id));
+                    value = array[0] ?? throw new ArgumentNullException(nameof(id));
+                }
+                return ($"{Identifier.Quote(keys[0].ColumnName)} = @Id", new[] { ParameterFactory.Create("@Id", value, dateTime2) });
+            }
+
+            if (id is not object[] values || values.Length != keys.Length)
+                throw new ArgumentException(
+                    $"Type '{metadata.ModelType.FullName}' has a composite key ({metadata.KeyColumnList}); pass an object[] with one value per key column, in that order.", nameof(id));
+
+            var predicates = new string[keys.Length];
+            var parameters = new SqlParameter[keys.Length];
+            for (int i = 0; i < keys.Length; i++)
+            {
+                if (values[i] is null)
+                    throw new ArgumentException($"Key value for '{keys[i].PropertyName}' is null.", nameof(id));
+                predicates[i] = $"{Identifier.Quote(keys[i].ColumnName)} = @Id{i}";
+                parameters[i] = ParameterFactory.Create($"@Id{i}", values[i], dateTime2);
+            }
+            return (string.Join(" AND ", predicates), parameters);
         }
 
         internal static string BuildPagedSql(string query, int page, int pageSize, SqlParameter[]? parameters, out SqlParameter[] merged)
@@ -850,7 +1088,7 @@ namespace TA.DataAccess.SqlServer
             return Identifier.Quote(metadata.ModelType.Name);
         }
 
-        internal static (string Sql, SqlParameter[] Parameters) ParameterizeInterpolation(FormattableString query)
+        internal static (string Sql, SqlParameter[] Parameters) ParameterizeInterpolation(FormattableString query, bool dateTime2 = false)
         {
             if (query is null) throw new ArgumentNullException(nameof(query));
             var args = query.GetArguments();
@@ -860,7 +1098,7 @@ namespace TA.DataAccess.SqlServer
             {
                 var name = $"@p{i}";
                 names[i] = name;
-                parameters[i] = ParameterFactory.Create(name, args[i]);
+                parameters[i] = ParameterFactory.Create(name, args[i], dateTime2);
             }
             var sql = string.Format(query.Format, names);
             return (sql, parameters);

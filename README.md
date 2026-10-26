@@ -12,12 +12,16 @@ Targets: **net8.0**, **net9.0**, **net10.0**.
 - Identifier hardening (`[bracketed]` + regex validation) against injection
 - `FormattableString` parameterized API for writes and reads (`ExecuteInterpolated`, `SelectInterpolated`)
 - Scalar queries (`ExecuteScalar<T>`), `Count<T>`, `Exists<T>`
-- `InsertModel` writes the generated `[Identity]` value back onto the model
-- Attribute-resolved by-key CRUD (`GetModelByKey<T>`, `DeleteByKey<T>`)
+- `InsertModel` writes the generated `[Identity]` and `[RowVersion]` values back onto the model, including on tables with triggers
+- Attribute-resolved by-key CRUD (`GetModelByKey<T>`, `DeleteByKey<T>`), with composite keys
+- Optimistic concurrency with `[RowVersion]` (`UpdateModel` throws `DBConcurrencyException` on a stale version)
+- `[Computed]` (database-filled) and `[InsertOnly]` columns
+- Multiple result sets in one round trip (`SelectMultiple<T1, T2>` / `<T1, T2, T3>`)
 - Paging via `OFFSET/FETCH` (`SelectPaged<T>`)
 - `IAsyncEnumerable<T>` streaming reads (`SelectStreamAsync`)
 - `SqlBulkCopy` for big inserts, streamed with no `DataTable` (`BulkInsertAsync`)
-- Attribute mapping: `[Table]`, `[Column]`, `[Key]`, `[Identity]`, `[NoCrud]`
+- Attribute mapping: `[Table]`, `[Column]`, `[Key]`, `[Identity]`, `[Computed]`, `[RowVersion]`, `[InsertOnly]`, `[NoCrud]`
+- Optional `datetime2` parameters for `DateTime` values (`UseDateTime2`)
 - Expanded type coercion: `DateOnly`, `TimeOnly`, `DateTimeOffset`, `Guid`, enums
 - Cached compiled getters/setters + per-column coercion delegates via expression trees
 - `ILogger<SqlServerHelper>` integration with timing
@@ -74,6 +78,71 @@ public class Product
 
 Without `[Table]`, the type name is used. Without `[Column]`, the property name is used. `[NoCrud]` properties are skipped. `[Identity]` is excluded from inserts and its generated value is written back onto the model after `InsertModel`/`InsertModelAsync`. `[Key]` (or `[Identity]` as fallback) drives `UpdateModel`, `GetModelByKey`, `DeleteByKey`, and `Exists` when `idColumn` is omitted. When `idColumn` is supplied to `UpdateModel`, it matches either the property name or the mapped column name.
 
+| Attribute | Read | Inserted | Updated | Use for |
+| --- | --- | --- | --- | --- |
+| *(none)* | ✓ | ✓ | ✓ | Ordinary columns |
+| `[Identity]` | ✓ | — | — | `IDENTITY` key; written back after insert |
+| `[Key]` | ✓ | ✓ | — (used in `WHERE`) | Key column; several make a composite key, ordered by `[Key(Order = n)]` |
+| `[Computed]` | ✓ | — | — | Computed columns, and columns left to a database default |
+| `[RowVersion]` | ✓ | — | — (checked in `WHERE`) | `rowversion` column (`byte[]`); written back after insert and update |
+| `[InsertOnly]` | ✓ | ✓ | — | `CreatedAt`, `CreatedBy` |
+| `[NoCrud]` | — | — | — | Properties that are not columns |
+
+```csharp
+[Table("ProductionPlan", Schema = "planning")]
+public class Plan
+{
+    [Identity] public int PlanId { get; set; }
+    public string Title { get; set; } = "";
+    public int Styles { get; set; }
+    public int PiecesPerStyle { get; set; }
+    [Computed] public int PlannedQty { get; set; }      // computed column in SQL Server
+    [Computed] public DateTime CreatedAt { get; set; }  // DEFAULT SYSUTCDATETIME()
+    [InsertOnly] public int CreatedBy { get; set; }
+    [RowVersion] public byte[]? RowVer { get; set; }
+}
+```
+
+### Composite keys
+
+Mark every key column with `[Key]`. `UpdateModel` matches all of them. The by-key methods take an
+`object[]` with one value per key column, in key order; passing a single value for a composite key
+throws `ArgumentException` instead of matching on part of the key.
+
+```csharp
+[Table("PlanLineSizeColor", Schema = "planning")]
+public class SizeColorQty
+{
+    [Key(Order = 1)] public int PlanLineId { get; set; }
+    [Key(Order = 2)] public int ProductSizeId { get; set; }
+    [Key(Order = 3)] public int ProductColorId { get; set; }
+    public int Quantity { get; set; }
+}
+
+var row = helper.GetModelByKey<SizeColorQty>(new object[] { lineId, sizeId, colorId });
+helper.DeleteByKey<SizeColorQty>(new object[] { lineId, sizeId, colorId });
+```
+
+### Optimistic concurrency
+
+With a `[RowVersion]` property, `UpdateModel` updates only if the stored version still equals the
+model's. Otherwise it throws `System.Data.DBConcurrencyException` and changes nothing. On success the
+new version is written back onto the model, so the same instance can be updated again. The version
+must be loaded (or carried from the client) before updating; a null version throws.
+
+```csharp
+var plan = helper.GetModelByKey<Plan>(id)!;
+plan.Title = "Summer 2027";
+try
+{
+    helper.UpdateModel(plan);
+}
+catch (DBConcurrencyException)
+{
+    // someone else changed or deleted the row: reload and retry, or tell the user
+}
+```
+
 ## Quick examples
 
 ```csharp
@@ -107,7 +176,11 @@ await helper.UpdateModelAsync(p);
 // generated identity is written back onto the model
 var order = new Order { CustomerId = 42 };
 await helper.InsertModelAsync(order);
-Console.WriteLine(order.Id);   // populated from OUTPUT INSERTED
+Console.WriteLine(order.Id);   // populated from the inserted row (works on tables with triggers)
+
+// header + lines in one round trip
+var (headers, lines) = await helper.SelectMultipleInterpolatedAsync<Order, OrderLine>(
+    $"SELECT * FROM sales.Orders WHERE Id = {order.Id}; SELECT * FROM sales.OrderLines WHERE OrderId = {order.Id};");
 
 // scalar, count, exists
 long total  = await helper.CountAsync<Product>();
@@ -154,17 +227,18 @@ catch
 | `SelectPaged<T>(query, page, pageSize, params)` | ✓ | ✓ | `OFFSET/FETCH`. Query must include `ORDER BY`. |
 | `SelectStreamAsync<T>(string, params)` | — | ✓ | Returns `IAsyncEnumerable<T>`. |
 | `SelectStreamInterpolatedAsync<T>(FormattableString)` | — | ✓ | Parameterized streaming read. |
-| `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`, writes the generated value back onto the model. |
+| `SelectMultiple<T1, T2[, T3]>(string, params)` | ✓ | ✓ | 2 or 3 result sets in one round trip. Also `SelectMultipleInterpolated`. Throws if fewer sets come back. |
+| `InsertModel<T>(model, table?)` | ✓ | ✓ | Single insert. Skips `[Identity]`/`[Computed]`/`[RowVersion]`, writes generated identity and rowversion back onto the model. |
 | `InsertModels<T>(list, table?)` | ✓ | ✓ | Transactional batch (no identity write-back). |
 | `BulkInsertAsync<T>(list \| IEnumerable, table?)` | — | ✓ | Streamed `SqlBulkCopy`. Best for >100 rows. |
 | `GetAllModels<T>(table?)` | ✓ | ✓ | Full table read. |
 | `GetModelById<T>(table, idColumn, id)` | ✓ | ✓ | Returns `T?`. |
-| `GetModelByKey<T>(id)` | ✓ | ✓ | `T?`; table + key resolved from attributes. |
+| `GetModelByKey<T>(id)` | ✓ | ✓ | `T?`; table + key resolved from attributes. Composite key: `object[]` of key values. |
 | `Count<T>(table?)` | ✓ | ✓ | `SELECT COUNT_BIG(*)` → `long`. |
-| `Exists<T>(id)` | ✓ | ✓ | Existence check by `[Key]`/`[Identity]`. |
-| `UpdateModel<T>(model, table?, idColumn?)` | ✓ | ✓ | `idColumn` defaults to `[Key]`/`[Identity]`. |
+| `Exists<T>(id)` | ✓ | ✓ | Existence check by `[Key]`/`[Identity]`. Composite key: `object[]`. |
+| `UpdateModel<T>(model, table?, idColumn?)` | ✓ | ✓ | `idColumn` defaults to all `[Key]` columns (or `[Identity]`). Checks `[RowVersion]`; throws `DBConcurrencyException` on conflict. |
 | `DeleteModel(table, idColumn, id)` | ✓ | ✓ | |
-| `DeleteByKey<T>(id)` | ✓ | ✓ | Table + key resolved from attributes. |
+| `DeleteByKey<T>(id)` | ✓ | ✓ | Table + key resolved from attributes. Composite key: `object[]`. |
 | `ExecuteProcedure(name, params)` | ✓ | ✓ | Rows affected; output params readable after. |
 | `QueryProcedure<T>(name, params)` | ✓ | ✓ | Maps result set to `List<T>`. Also `DataTable` overload. |
 | `ExecuteProcedureScalar<T>(name, params)` | ✓ | ✓ | Single value from a proc. |
@@ -185,6 +259,10 @@ await uow.InsertModelsAsync(order.Lines);
 await uow.CommitAsync();
 ```
 
+Stored procedures can run inside the unit of work, including procedures that open their own
+transaction with `SET XACT_ABORT ON`. If one fails, SQL Server rolls back the whole transaction, the
+original `SqlException` reaches the caller, and disposing the unit of work is still safe.
+
 ## Options
 
 `SqlServerHelperOptions`:
@@ -195,6 +273,7 @@ await uow.CommitAsync();
 | `BulkCopyTimeoutSeconds` | 60 | Used by `BulkInsertAsync`. |
 | `BulkCopyBatchSize` | 1000 | Used by `BulkInsertAsync`. |
 | `LogParameters` | false | Whether to include parameter values in debug logs. |
+| `UseDateTime2` | false | Send `DateTime` values that the library parameterizes as `datetime2` (full precision and range). Turn on for `datetime2` columns; the default `datetime` rounds to 1/300 s and rejects dates before 1753. |
 
 ## Contributing
 
